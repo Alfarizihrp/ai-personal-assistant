@@ -20,8 +20,14 @@ import {
   Sparkles,
   ChevronDown,
   ChevronUp,
+  RotateCcw,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+
+interface SpokenSegment {
+  lang: "id" | "ar";
+  text: string;
+}
 
 interface AssistantResponse {
   transcript: string;
@@ -33,6 +39,16 @@ interface AssistantResponse {
   ideaContent?: string;
   targetApp?: string;
   replyMessage: string;
+  spokenSegments?: SpokenSegment[];
+}
+
+interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  segments?: SpokenSegment[];
+  intent?: string;
+  timestamp: string;
 }
 
 interface ScheduleItem {
@@ -62,19 +78,17 @@ export default function Home() {
   const [textCommand, setTextCommand] = useState("");
   const [statusLog, setStatusLog] = useState("Siap mendengarkan perintahmu, Akhi");
   const [error, setError] = useState("");
-  const [aiResult, setAiResult] = useState<AssistantResponse | null>(null);
 
-  const [activeTab, setActiveTab] = useState<"schedules" | "ideas">("schedules");
+  const [activeTab, setActiveTab] = useState<"chat" | "schedules" | "ideas">("chat");
+  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
 
   const [schedules, setSchedules] = useState<ScheduleItem[]>([]);
   const [ideas, setIdeas] = useState<IdeaItem[]>([]);
   const [loadingData, setLoadingData] = useState(true);
 
-  // State khusus AI Idea Expander
   const [expandingIdeaId, setExpandingIdeaId] = useState<number | null>(null);
   const [collapsedExpansions, setCollapsedExpansions] = useState<Record<number, boolean>>({});
 
-  // Form tulis ide manual
   const [manualIdeaTitle, setManualIdeaTitle] = useState("");
   const [manualIdeaContent, setManualIdeaContent] = useState("");
   const [showIdeaForm, setShowIdeaForm] = useState(false);
@@ -83,25 +97,97 @@ export default function Home() {
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const speechQueueIdRef = useRef<number>(0);
 
-  const speakReply = (text: string) => {
+  useEffect(() => {
+    try {
+      const savedChat = localStorage.getItem("akhi_chat_history");
+      if (savedChat) {
+        setChatHistory(JSON.parse(savedChat));
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("akhi_chat_history", JSON.stringify(chatHistory));
+    } catch {}
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatHistory]);
+
+  // Mesin Pembaca Suara Ganda (Otomatis ganti ke suara Arab ar-SA untuk dalil/hadits)
+  const speakSegments = (segments: SpokenSegment[]) => {
     if (!voiceEnabled || typeof window === "undefined" || !("speechSynthesis" in window)) {
       return;
     }
+
     window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = "id-ID";
-    utterance.rate = 1.02;
+    const currentQueueId = ++speechQueueIdRef.current;
 
     const voices = window.speechSynthesis.getVoices();
-    const idVoice = voices.find((v) => v.lang.includes("id-ID") || v.lang.includes("id_ID"));
-    if (idVoice) utterance.voice = idVoice;
+    const idVoice =
+      voices.find(
+        (v) =>
+          (v.lang.includes("id-ID") || v.lang.includes("id_ID")) &&
+          (v.name.toLowerCase().includes("ardi") || v.name.toLowerCase().includes("male"))
+      ) || voices.find((v) => v.lang.includes("id-ID") || v.lang.includes("id_ID"));
 
-    utterance.onstart = () => setIsSpeaking(true);
-    utterance.onend = () => setIsSpeaking(false);
-    utterance.onerror = () => setIsSpeaking(false);
+    const arVoice =
+      voices.find((v) => v.lang.includes("ar-SA") || v.lang.includes("ar_SA")) ||
+      voices.find((v) => v.lang.startsWith("ar"));
 
-    window.speechSynthesis.speak(utterance);
+    const validSegments = segments.filter((s) => s.text && s.text.trim().length > 0);
+    if (validSegments.length === 0) return;
+
+    let index = 0;
+    setIsSpeaking(true);
+
+    const speakNext = () => {
+      if (currentQueueId !== speechQueueIdRef.current || index >= validSegments.length) {
+        if (currentQueueId === speechQueueIdRef.current) {
+          setIsSpeaking(false);
+        }
+        return;
+      }
+
+      const seg = validSegments[index];
+      index++;
+
+      const cleanText =
+        seg.lang === "ar"
+          ? seg.text.trim()
+          : seg.text.replace(/[*#_`]/g, "").trim();
+
+      const utterance = new SpeechSynthesisUtterance(cleanText);
+
+      if (seg.lang === "ar") {
+        utterance.lang = "ar-SA";
+        if (arVoice) utterance.voice = arVoice;
+        utterance.rate = 0.85; // Tempo tartil/jelas untuk lafal Arab berharakat
+        utterance.pitch = 0.95;
+      } else {
+        utterance.lang = "id-ID";
+        if (idVoice) utterance.voice = idVoice;
+        utterance.rate = 0.94; // Tempo tenang & santun untuk Bahasa Indonesia
+        utterance.pitch = 0.95;
+      }
+
+      utterance.onend = () => speakNext();
+      utterance.onerror = () => speakNext();
+
+      window.speechSynthesis.speak(utterance);
+    };
+
+    speakNext();
+  };
+
+  const stopSpeaking = () => {
+    speechQueueIdRef.current++;
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+    setIsSpeaking(false);
   };
 
   const playReminderTone = () => {
@@ -128,7 +214,12 @@ export default function Home() {
 
   useEffect(() => {
     if (typeof window !== "undefined") {
-      if ("speechSynthesis" in window) window.speechSynthesis.getVoices();
+      if ("speechSynthesis" in window) {
+        window.speechSynthesis.getVoices();
+        window.speechSynthesis.onvoiceschanged = () => {
+          window.speechSynthesis.getVoices();
+        };
+      }
       if ("Notification" in window) setNotifPermission(Notification.permission);
     }
     fetchAllData();
@@ -146,15 +237,21 @@ export default function Home() {
 
         if (diffMinutes <= 15 && diffMinutes >= -30) {
           playReminderTone();
-          const reminderText =
-            diffMinutes > 1
-              ? `Pengingat untuk Akhi: ${Math.ceil(diffMinutes)} menit lagi ada jadwal ${item.title}.`
-              : `Waktunya sekarang, Akhi! Jadwal ${item.title} telah tiba.`;
+          const reminderSegments: SpokenSegment[] = [
+            { lang: "ar", text: "السَّلَامُ عَلَيْكُمْ وَرَحْمَةُ اللَّهِ وَبَرَكَاتُهُ" },
+            {
+              lang: "id",
+              text:
+                diffMinutes > 1
+                  ? `Akhi, ${Math.ceil(diffMinutes)} menit lagi ada jadwal ${item.title}.`
+                  : `Akhi, waktunya sekarang untuk ${item.title}.`,
+            },
+          ];
 
-          speakReply(reminderText);
+          speakSegments(reminderSegments);
 
           if ("Notification" in window && Notification.permission === "granted") {
-            new Notification("Pengingat Jadwal — Akhi Assistant", {
+            new Notification("Pengingat Jadwal — Asisten Akhi", {
               body: `${item.title} (${item.schedule_time})`,
             });
           }
@@ -257,7 +354,10 @@ export default function Home() {
         )
       );
       setCollapsedExpansions((prev) => ({ ...prev, [idea.id]: false }));
-      speakReply(`Ide ${idea.title} sudah selesai dijabarkan, Akhi.`);
+      speakSegments([
+        { lang: "ar", text: "الْحَمْدُ لِلَّهِ" },
+        { lang: "id", text: `Ide ${idea.title} sudah selesai dijabarkan, Akhi.` },
+      ]);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -316,6 +416,12 @@ export default function Home() {
     if (!error) setIdeas((prev) => prev.filter((item) => item.id !== id));
   };
 
+  const clearChatHistory = () => {
+    stopSpeaking();
+    setChatHistory([]);
+    localStorage.removeItem("akhi_chat_history");
+  };
+
   const blobToBase64 = (blob: Blob): Promise<string> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -346,23 +452,50 @@ export default function Home() {
   }) => {
     setIsProcessing(true);
     setError("");
-    setAiResult(null);
-    setStatusLog("Memproses perintah...");
+    setStatusLog("Menyimak & menyiapkan dalil...");
 
     try {
       const res = await fetch("/api/assistant", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          ...payload,
+          chatHistory: chatHistory.map((m) => ({ role: m.role, text: m.text })),
+        }),
       });
 
-      const data = await res.json();
+      const data: AssistantResponse & { error?: string } = await res.json();
       if (!res.ok) throw new Error(data.error || "Terjadi kesalahan pada server.");
 
-      setAiResult(data);
+      const timeStr = new Date().toLocaleTimeString("id-ID", {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+
+      const segmentsToUse: SpokenSegment[] =
+        data.spokenSegments && data.spokenSegments.length > 0
+          ? data.spokenSegments
+          : [{ lang: "id", text: data.replyMessage }];
+
+      const userMsg: ChatMessage = {
+        id: `${Date.now()}-u`,
+        role: "user",
+        text: data.transcript,
+        timestamp: timeStr,
+      };
+      const aiMsg: ChatMessage = {
+        id: `${Date.now()}-a`,
+        role: "assistant",
+        text: data.replyMessage,
+        segments: segmentsToUse,
+        intent: data.intent,
+        timestamp: timeStr,
+      };
+
+      setChatHistory((prev) => [...prev, userMsg, aiMsg]);
       setStatusLog("Selesai!");
 
-      if (data.replyMessage) speakReply(data.replyMessage);
+      speakSegments(segmentsToUse);
 
       if (data.intent === "open_app") {
         handleOpenApp(data.targetApp);
@@ -377,6 +510,8 @@ export default function Home() {
           data.ideaTitle || "Catatan Ide Suara",
           data.ideaContent || data.transcript
         );
+      } else {
+        setActiveTab("chat");
       }
     } catch (err: any) {
       setError(err.message);
@@ -396,10 +531,7 @@ export default function Home() {
 
   const startRecording = async () => {
     setError("");
-    setAiResult(null);
-    if (typeof window !== "undefined" && "speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
-    }
+    stopSpeaking();
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -458,7 +590,7 @@ export default function Home() {
             <button
               type="button"
               onClick={() => {
-                if (voiceEnabled && typeof window !== "undefined") window.speechSynthesis.cancel();
+                if (voiceEnabled) stopSpeaking();
                 setVoiceEnabled(!voiceEnabled);
               }}
               title={voiceEnabled ? "Matikan suara balasan" : "Nyalakan suara balasan"}
@@ -476,7 +608,7 @@ export default function Home() {
             AI Personal Assistant
           </h1>
           <p className="text-slate-400 text-xs mb-6">
-            Asisten Pribadi untuk Akhi
+            Asisten Pribadi & Diskusi Ilmu untuk Akhi
           </p>
 
           <button
@@ -500,16 +632,27 @@ export default function Home() {
             )}
           </button>
 
-          <p className="mt-3 text-xs text-blue-400 font-mono">
-            {isSpeaking ? "Asisten sedang berbicara..." : statusLog}
-          </p>
+          <div className="mt-3 flex items-center gap-2">
+            <p className="text-xs text-blue-400 font-mono">
+              {isSpeaking ? "Asisten sedang berbicara..." : statusLog}
+            </p>
+            {isSpeaking && (
+              <button
+                type="button"
+                onClick={stopSpeaking}
+                className="text-[11px] bg-red-950/70 border border-red-800/60 text-red-300 px-2 py-0.5 rounded cursor-pointer"
+              >
+                Stop Suara
+              </button>
+            )}
+          </div>
 
           <form onSubmit={handleTextSubmit} className="w-full mt-5 flex gap-2">
             <input
               type="text"
               value={textCommand}
               onChange={(e) => setTextCommand(e.target.value)}
-              placeholder="Catat jadwal atau ide..."
+              placeholder="Tanya dalil, catat jadwal, atau ide..."
               disabled={isProcessing || isRecording}
               className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500"
             />
@@ -522,75 +665,6 @@ export default function Home() {
             </button>
           </form>
 
-       {aiResult && (
-            <div className="w-full mt-5 text-left space-y-2.5 bg-slate-950 border border-slate-800 rounded-xl p-4">
-              <div>
-                <span className="text-[10px] uppercase tracking-wider text-slate-500">
-                  Pertanyaan / Perintah Akhi:
-                </span>
-                <p className="text-sm text-slate-200 italic">"{aiResult.transcript}"</p>
-              </div>
-
-              <div className="border-t border-slate-800 pt-2.5">
-                <div className="flex items-center justify-between mb-1.5">
-                  <div className="flex items-center gap-2 text-xs font-semibold text-emerald-400">
-                    {aiResult.intent === "save_schedule" && (
-                      <>
-                        <Calendar className="w-4 h-4" />
-                        <span>Jadwal & Pengingat Tersimpan</span>
-                      </>
-                    )}
-                    {aiResult.intent === "save_idea" && (
-                      <>
-                        <Lightbulb className="w-4 h-4 text-amber-400" />
-                        <span className="text-amber-400">Ide Tersimpan ke Workspace</span>
-                      </>
-                    )}
-                    {aiResult.intent === "open_app" && (
-                      <>
-                        <ExternalLink className="w-4 h-4" />
-                        <span>Membuka Aplikasi ({aiResult.targetApp})</span>
-                      </>
-                    )}
-                    {aiResult.intent === "general_chat" && (
-                      <>
-                        <MessageSquare className="w-4 h-4" />
-                        <span>Diskusi & Dalil</span>
-                      </>
-                    )}
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    {isSpeaking ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          window.speechSynthesis.cancel();
-                          setIsSpeaking(false);
-                        }}
-                        className="text-xs text-red-400 hover:text-red-300 flex items-center gap-1 cursor-pointer"
-                      >
-                        <VolumeX className="w-3.5 h-3.5" />
-                        <span>Stop</span>
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => speakReply(aiResult.replyMessage)}
-                        className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1 cursor-pointer"
-                      >
-                        <Volume2 className="w-3.5 h-3.5" />
-                        <span>Putar</span>
-                      </button>
-                    )}
-                  </div>
-                </div>
-                <p className="text-sm text-slate-100 leading-relaxed whitespace-pre-line">
-                  {aiResult.replyMessage}
-                </p>
-              </div>
-            </div>
-          )}
           {error && (
             <p className="mt-4 text-xs text-red-400 bg-red-950/50 border border-red-900 px-3 py-2 rounded-lg">
               {error}
@@ -598,36 +672,121 @@ export default function Home() {
           )}
         </div>
 
-        {/* Navigasi Tab */}
-        <div className="grid grid-cols-2 gap-2 bg-slate-900 p-1.5 rounded-xl border border-slate-800">
+        {/* Navigasi 3 Tab */}
+        <div className="grid grid-cols-3 gap-1.5 bg-slate-900 p-1.5 rounded-xl border border-slate-800">
+          <button
+            type="button"
+            onClick={() => setActiveTab("chat")}
+            className={`flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+              activeTab === "chat"
+                ? "bg-emerald-600 text-white shadow"
+                : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            <MessageSquare className="w-3.5 h-3.5" />
+            <span>Diskusi ({Math.floor(chatHistory.length / 2)})</span>
+          </button>
+
           <button
             type="button"
             onClick={() => setActiveTab("schedules")}
-            className={`flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+            className={`flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
               activeTab === "schedules"
                 ? "bg-blue-600 text-white shadow"
                 : "text-slate-400 hover:text-slate-200"
             }`}
           >
-            <Calendar className="w-4 h-4" />
+            <Calendar className="w-3.5 h-3.5" />
             <span>Jadwal ({schedules.length})</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab("ideas")}
-            className={`flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+            className={`flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
               activeTab === "ideas"
                 ? "bg-amber-600 text-white shadow"
                 : "text-slate-400 hover:text-slate-200"
             }`}
           >
-            <Lightbulb className="w-4 h-4" />
-            <span>Workspace Ide ({ideas.length})</span>
+            <Lightbulb className="w-3.5 h-3.5" />
+            <span>Ide ({ideas.length})</span>
           </button>
         </div>
 
-        {/* Tab 1: Daftar Jadwal */}
+        {/* Tab 1: Riwayat Diskusi */}
+        {activeTab === "chat" && (
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold flex items-center gap-2">
+                <MessageSquare className="w-4 h-4 text-emerald-400" />
+                <span>Riwayat Diskusi & Dalil</span>
+              </h2>
+              {chatHistory.length > 0 && (
+                <button
+                  type="button"
+                  onClick={clearChatHistory}
+                  className="text-[11px] text-slate-400 hover:text-red-400 flex items-center gap-1 cursor-pointer"
+                  title="Bersihkan riwayat diskusi"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span>Reset</span>
+                </button>
+              )}
+            </div>
+
+            {chatHistory.length === 0 ? (
+              <p className="text-xs text-slate-500 text-center py-6 leading-relaxed">
+                Belum ada diskusi, Akhi. Coba tanyakan seputar adab menuntut ilmu, hukum ibadah, atau nasihat harian.
+              </p>
+            ) : (
+              <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
+                {chatHistory.map((msg) => (
+                  <div
+                    key={msg.id}
+                    className={`rounded-xl p-3.5 text-sm ${
+                      msg.role === "user"
+                        ? "bg-blue-950/40 border border-blue-900/50 ml-6 text-slate-100"
+                        : "bg-slate-950 border border-slate-800 mr-2 text-slate-100"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span
+                        className={`text-[10px] font-semibold uppercase tracking-wider ${
+                          msg.role === "user" ? "text-blue-400" : "text-emerald-400"
+                        }`}
+                      >
+                        {msg.role === "user" ? "Akhi" : "Asisten"} • {msg.timestamp}
+                      </span>
+
+                      {msg.role === "assistant" && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            speakSegments(
+                              msg.segments || [{ lang: "id", text: msg.text }]
+                            )
+                          }
+                          className="text-[11px] text-emerald-400 hover:text-emerald-300 flex items-center gap-1 cursor-pointer"
+                        >
+                          <Volume2 className="w-3 h-3" />
+                          <span>Dengar</span>
+                        </button>
+                      )}
+                    </div>
+
+                    <p className="text-xs sm:text-sm leading-relaxed whitespace-pre-line">
+                      {msg.text}
+                    </p>
+                  </div>
+                ))}
+                <div ref={chatEndRef} />
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Tab 2: Daftar Jadwal */}
         {activeTab === "schedules" && (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
             <div className="flex items-center justify-between mb-4">
@@ -650,7 +809,7 @@ export default function Home() {
               <p className="text-xs text-slate-500 text-center py-4">Memuat agenda...</p>
             ) : schedules.length === 0 ? (
               <p className="text-xs text-slate-500 text-center py-4">
-                Belum ada jadwal. Coba ucapkan "Ingatkan rapat besok jam 9 pagi".
+                Belum ada jadwal. Coba ucapkan "Ingatkan kajian besok jam 8 malam".
               </p>
             ) : (
               <ul className="space-y-2.5">
@@ -700,7 +859,7 @@ export default function Home() {
           </div>
         )}
 
-        {/* Tab 2: Workspace Ide dengan AI Idea Expander */}
+        {/* Tab 3: Workspace Ide */}
         {activeTab === "ideas" && (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
             <div className="flex items-center justify-between">
@@ -802,7 +961,6 @@ export default function Home() {
                         {idea.content}
                       </p>
 
-                      {/* Baris Aksi AI Idea Expander */}
                       <div className="flex items-center justify-between pt-2 border-t border-slate-900">
                         <span className="text-[10px] text-slate-600">
                           {new Date(idea.created_at).toLocaleDateString("id-ID", {
@@ -857,7 +1015,6 @@ export default function Home() {
                         </div>
                       </div>
 
-                      {/* Hasil Penjabaran AI */}
                       {idea.ai_expansion && !isCollapsed && (
                         <div className="mt-2 p-3 bg-slate-900/90 border border-amber-900/40 rounded-lg text-xs text-slate-200 leading-relaxed whitespace-pre-line">
                           {idea.ai_expansion}
