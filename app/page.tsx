@@ -17,6 +17,9 @@ import {
   Lightbulb,
   Bell,
   Plus,
+  Sparkles,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
@@ -45,6 +48,7 @@ interface IdeaItem {
   id: number;
   title: string;
   content: string;
+  ai_expansion?: string | null;
   created_at: string;
 }
 
@@ -60,15 +64,17 @@ export default function Home() {
   const [error, setError] = useState("");
   const [aiResult, setAiResult] = useState<AssistantResponse | null>(null);
 
-  // Tab navigasi: "schedules" atau "ideas"
   const [activeTab, setActiveTab] = useState<"schedules" | "ideas">("schedules");
 
-  // Data Jadwal & Ide
   const [schedules, setSchedules] = useState<ScheduleItem[]>([]);
   const [ideas, setIdeas] = useState<IdeaItem[]>([]);
   const [loadingData, setLoadingData] = useState(true);
 
-  // Form tulis ide manual di Workspace
+  // State khusus AI Idea Expander
+  const [expandingIdeaId, setExpandingIdeaId] = useState<number | null>(null);
+  const [collapsedExpansions, setCollapsedExpansions] = useState<Record<number, boolean>>({});
+
+  // Form tulis ide manual
   const [manualIdeaTitle, setManualIdeaTitle] = useState("");
   const [manualIdeaContent, setManualIdeaContent] = useState("");
   const [showIdeaForm, setShowIdeaForm] = useState(false);
@@ -76,7 +82,6 @@ export default function Home() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
 
-  // Text-to-Speech Bahasa Indonesia
   const speakReply = (text: string) => {
     if (!voiceEnabled || typeof window === "undefined" || !("speechSynthesis" in window)) {
       return;
@@ -97,14 +102,13 @@ export default function Home() {
     window.speechSynthesis.speak(utterance);
   };
 
-  // Bunyi nada pengingat singkat menggunakan Web Audio API
   const playReminderTone = () => {
     try {
       const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
       const oscillator = audioCtx.createOscillator();
       const gainNode = audioCtx.createGain();
       oscillator.type = "sine";
-      oscillator.frequency.setValueAtTime(880, audioCtx.currentTime); // Nada A5
+      oscillator.frequency.setValueAtTime(880, audioCtx.currentTime);
       gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
       oscillator.connect(gainNode);
       gainNode.connect(audioCtx.destination);
@@ -113,7 +117,6 @@ export default function Home() {
     } catch {}
   };
 
-  // Minta izin Notifikasi Browser
   const requestNotificationPermission = async () => {
     if (typeof window !== "undefined" && "Notification" in window) {
       const perm = await Notification.requestPermission();
@@ -129,7 +132,6 @@ export default function Home() {
     fetchAllData();
   }, []);
 
-  // Pengecekan Pengingat Jadwal Otomatis setiap 30 detik
   useEffect(() => {
     const interval = setInterval(async () => {
       const now = new Date().getTime();
@@ -140,7 +142,6 @@ export default function Home() {
         const targetTime = new Date(item.target_datetime).getTime();
         const diffMinutes = (targetTime - now) / (1000 * 60);
 
-        // Picu pengingat jika waktu jadwal tinggal <= 15 menit lagi (dan belum lewat > 30 menit)
         if (diffMinutes <= 15 && diffMinutes >= -30) {
           playReminderTone();
           const reminderText =
@@ -156,7 +157,6 @@ export default function Home() {
             });
           }
 
-          // Tandai sudah diingatkan di database agar tidak berbunyi berulang-ulang
           await supabase
             .from("schedules")
             .update({ reminded: true })
@@ -167,7 +167,7 @@ export default function Home() {
           );
         }
       }
-    }, 30000); // Cek setiap 30 detik
+    }, 30000);
 
     return () => clearInterval(interval);
   }, [schedules, voiceEnabled]);
@@ -218,6 +218,52 @@ export default function Home() {
     } else {
       setError(`Gagal menyimpan ide: ${error.message}`);
     }
+  };
+
+  // Fungsi AI Idea Expander
+  const handleExpandIdea = async (idea: IdeaItem) => {
+    if (expandingIdeaId !== null) return;
+    setExpandingIdeaId(idea.id);
+    setError("");
+
+    try {
+      const res = await fetch("/api/expand-idea", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: idea.title,
+          content: idea.content,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Gagal mengembangkan ide.");
+
+      // Simpan hasil pengembangan AI ke Supabase
+      const { error: dbError } = await supabase
+        .from("ideas")
+        .update({ ai_expansion: data.expansion })
+        .eq("id", idea.id);
+
+      if (dbError) throw new Error(dbError.message);
+
+      // Perbarui state lokal & pastikan bagian expansion terbuka
+      setIdeas((prev) =>
+        prev.map((item) =>
+          item.id === idea.id ? { ...item, ai_expansion: data.expansion } : item
+        )
+      );
+      setCollapsedExpansions((prev) => ({ ...prev, [idea.id]: false }));
+      speakReply(`Ide ${idea.title} sudah selesai dijabarkan, Akhi.`);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setExpandingIdeaId(null);
+    }
+  };
+
+  const toggleCollapseExpansion = (id: number) => {
+    setCollapsedExpansions((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
   const handleManualIdeaSubmit = async (e: React.FormEvent) => {
@@ -375,7 +421,6 @@ export default function Home() {
       <div className="max-w-md w-full space-y-5">
         {/* Kartu Utama Asisten */}
         <div className="relative bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col items-center text-center">
-          {/* Tombol Notifikasi & Suara di pojok kanan atas */}
           <div className="absolute top-4 right-4 flex items-center gap-1.5">
             {notifPermission !== "granted" && (
               <button
@@ -436,7 +481,6 @@ export default function Home() {
             {isSpeaking ? "Asisten sedang berbicara..." : statusLog}
           </p>
 
-          {/* Form Input Perintah */}
           <form onSubmit={handleTextSubmit} className="w-full mt-5 flex gap-2">
             <input
               type="text"
@@ -455,7 +499,6 @@ export default function Home() {
             </button>
           </form>
 
-          {/* Hasil Respons AI */}
           {aiResult && (
             <div className="w-full mt-5 text-left space-y-2.5 bg-slate-950 border border-slate-800 rounded-xl p-4">
               <div>
@@ -515,7 +558,7 @@ export default function Home() {
           )}
         </div>
 
-        {/* Navigasi Tab: Jadwal vs Workspace Ide */}
+        {/* Navigasi Tab */}
         <div className="grid grid-cols-2 gap-2 bg-slate-900 p-1.5 rounded-xl border border-slate-800">
           <button
             type="button"
@@ -544,7 +587,7 @@ export default function Home() {
           </button>
         </div>
 
-        {/* Konten Tab 1: Daftar Jadwal & Pengingat */}
+        {/* Tab 1: Daftar Jadwal */}
         {activeTab === "schedules" && (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
             <div className="flex items-center justify-between mb-4">
@@ -617,7 +660,7 @@ export default function Home() {
           </div>
         )}
 
-        {/* Konten Tab 2: Workspace Ide */}
+        {/* Tab 2: Workspace Ide dengan AI Idea Expander */}
         {activeTab === "ideas" && (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
             <div className="flex items-center justify-between">
@@ -635,7 +678,6 @@ export default function Home() {
               </button>
             </div>
 
-            {/* Form Tulis Ide Manual */}
             {showIdeaForm && (
               <form
                 onSubmit={handleManualIdeaSubmit}
@@ -681,37 +723,97 @@ export default function Home() {
               </p>
             ) : (
               <div className="space-y-3">
-                {ideas.map((idea) => (
-                  <div
-                    key={idea.id}
-                    className="bg-slate-950 border border-slate-800/80 rounded-xl p-3.5 space-y-1.5"
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <h3 className="text-sm font-semibold text-amber-300">
-                        {idea.title}
-                      </h3>
-                      <button
-                        type="button"
-                        onClick={() => deleteIdea(idea.id)}
-                        className="text-slate-600 hover:text-red-400 transition cursor-pointer"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                {ideas.map((idea) => {
+                  const isExpanding = expandingIdeaId === idea.id;
+                  const isCollapsed = collapsedExpansions[idea.id];
+
+                  return (
+                    <div
+                      key={idea.id}
+                      className="bg-slate-950 border border-slate-800/80 rounded-xl p-3.5 space-y-2.5"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <h3 className="text-sm font-semibold text-amber-300">
+                          {idea.title}
+                        </h3>
+                        <button
+                          type="button"
+                          onClick={() => deleteIdea(idea.id)}
+                          className="text-slate-600 hover:text-red-400 transition cursor-pointer"
+                          title="Hapus ide"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      <p className="text-xs text-slate-300 leading-relaxed whitespace-pre-line">
+                        {idea.content}
+                      </p>
+
+                      {/* Baris Aksi AI Idea Expander */}
+                      <div className="flex items-center justify-between pt-1 border-t border-slate-900">
+                        <span className="text-[10px] text-slate-600">
+                          {new Date(idea.created_at).toLocaleDateString("id-ID", {
+                            day: "numeric",
+                            month: "short",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </span>
+
+                        <div className="flex items-center gap-2">
+                          {idea.ai_expansion && (
+                            <button
+                              type="button"
+                              onClick={() => toggleCollapseExpansion(idea.id)}
+                              className="text-[11px] text-slate-400 hover:text-slate-200 flex items-center gap-0.5 cursor-pointer"
+                            >
+                              {isCollapsed ? (
+                                <>
+                                  <ChevronDown className="w-3.5 h-3.5" />
+                                  <span>Lihat Rincian</span>
+                                </>
+                              ) : (
+                                <>
+                                  <ChevronUp className="w-3.5 h-3.5" />
+                                  <span>Sembunyikan</span>
+                                </>
+                              )}
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            disabled={expandingIdeaId !== null}
+                            onClick={() => handleExpandIdea(idea)}
+                            className="text-[11px] bg-amber-950/60 hover:bg-amber-900/70 border border-amber-700/50 text-amber-300 px-2.5 py-1 rounded-lg flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
+                          >
+                            {isExpanding ? (
+                              <>
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                                <span>Menjabarkan...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Sparkles className="w-3 h-3" />
+                                <span>
+                                  {idea.ai_expansion ? "Kembangkan Ulang" : "Kembangkan dengan AI"}
+                                </span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Hasil Penjabaran AI */}
+                      {idea.ai_expansion && !isCollapsed && (
+                        <div className="mt-2 p-3 bg-slate-900/90 border border-amber-900/40 rounded-lg text-xs text-slate-200 leading-relaxed whitespace-pre-line">
+                          {idea.ai_expansion}
+                        </div>
+                      )}
                     </div>
-                    <p className="text-xs text-slate-300 leading-relaxed whitespace-pre-line">
-                      {idea.content}
-                    </p>
-                    <p className="text-[10px] text-slate-600 pt-1">
-                      {new Date(idea.created_at).toLocaleDateString("id-ID", {
-                        day: "numeric",
-                        month: "short",
-                        year: "numeric",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </p>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
