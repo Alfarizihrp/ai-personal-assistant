@@ -22,6 +22,8 @@ import {
   ChevronUp,
   RotateCcw,
   Sun,
+  BookmarkPlus,
+  Check,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
@@ -78,6 +80,10 @@ export default function Home() {
 
   const [activeTab, setActiveTab] = useState<"chat" | "schedules" | "ideas">("chat");
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+
+  // State untuk tombol Simpan Faedah pada riwayat diskusi
+  const [savingChatId, setSavingChatId] = useState<string | null>(null);
+  const [savedChatIds, setSavedChatIds] = useState<Record<string, boolean>>({});
 
   const [schedules, setSchedules] = useState<ScheduleItem[]>([]);
   const [ideas, setIdeas] = useState<IdeaItem[]>([]);
@@ -252,7 +258,43 @@ export default function Home() {
     return schedRes.data || [];
   };
 
-  // Fungsi Daily Briefing (Ringkasan Agenda & Faedah Ilmu)
+  // Simpan Faedah Diskusi / Briefing langsung ke Workspace Supabase
+  const handleSaveFaedahToWorkspace = async (msg: ChatMessage, index: number) => {
+    if (savingChatId || savedChatIds[msg.id]) return;
+    setSavingChatId(msg.id);
+    setError("");
+
+    try {
+      // Cari pesan pertanyaan pengguna tepat sebelum balasan asisten ini sebagai judul
+      const prevUserMsg = index > 0 && chatHistory[index - 1]?.role === "user"
+        ? chatHistory[index - 1].text
+        : "Catatan Faedah Diskusi";
+
+      const shortQuestion =
+        prevUserMsg.length > 55 ? `${prevUserMsg.slice(0, 55)}...` : prevUserMsg;
+
+      const labelPrefix =
+        msg.intent === "daily_briefing" ? "[Briefing & Faedah]" : "[Faedah Ilmu]";
+
+      const { error: dbErr } = await supabase.from("ideas").insert([
+        {
+          title: `${labelPrefix} ${shortQuestion}`,
+          content: msg.text,
+        },
+      ]);
+
+      if (dbErr) throw new Error(dbErr.message);
+
+      await fetchAllData();
+      setSavedChatIds((prev) => ({ ...prev, [msg.id]: true }));
+      speakReply("Faedah diskusi sudah tersimpan ke Workspace, Akhi.", false);
+    } catch (err: any) {
+      setError(`Gagal menyimpan faedah: ${err.message}`);
+    } finally {
+      setSavingChatId(null);
+    }
+  };
+
   const triggerDailyBriefing = async (customTranscript?: string) => {
     if (isBriefingLoading || isProcessing) return;
     setIsBriefingLoading(true);
@@ -261,7 +303,6 @@ export default function Home() {
     setStatusLog("Menyiapkan ringkasan agenda & faedah...");
 
     try {
-      // Ambil data jadwal terbaru dari Supabase
       const latestSchedules = await fetchAllData();
 
       const res = await fetch("/api/daily-briefing", {
@@ -439,6 +480,7 @@ export default function Home() {
   const clearChatHistory = () => {
     stopSpeaking();
     setChatHistory([]);
+    setSavedChatIds({});
     localStorage.removeItem("akhi_chat_history");
   };
 
@@ -487,7 +529,6 @@ export default function Home() {
       const data: AssistantResponse & { error?: string } = await res.json();
       if (!res.ok) throw new Error(data.error || "Terjadi kesalahan pada server.");
 
-      // Jika pengguna meminta ringkasan hari ini lewat suara/teks, arahkan ke fungsi Daily Briefing
       if (data.intent === "daily_briefing") {
         setIsProcessing(false);
         await triggerDailyBriefing(data.transcript);
@@ -754,7 +795,7 @@ export default function Home() {
             }`}
           >
             <Lightbulb className="w-3.5 h-3.5" />
-            <span>Ide ({ideas.length})</span>
+            <span>Workspace ({ideas.length})</span>
           </button>
         </div>
 
@@ -785,46 +826,84 @@ export default function Home() {
               </p>
             ) : (
               <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
-                {chatHistory.map((msg) => (
-                  <div
-                    key={msg.id}
-                    className={`rounded-xl p-3.5 text-sm ${
-                      msg.role === "user"
-                        ? "bg-blue-950/40 border border-blue-900/50 ml-6 text-slate-100"
-                        : "bg-slate-950 border border-slate-800 mr-2 text-slate-100"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-1">
-                      <span
-                        className={`text-[10px] font-semibold uppercase tracking-wider ${
-                          msg.role === "user" ? "text-blue-400" : "text-emerald-400"
-                        }`}
-                      >
-                        {msg.role === "user" ? "Akhi" : "Asisten"} • {msg.timestamp}
-                      </span>
+                {chatHistory.map((msg, idx) => {
+                  const isSavingThis = savingChatId === msg.id;
+                  const isSavedThis = savedChatIds[msg.id];
 
-                      {msg.role === "assistant" && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            speakReply(
-                              msg.spokenText || msg.text,
-                              msg.intent === "general_chat" || msg.intent === "daily_briefing"
-                            )
-                          }
-                          className="text-[11px] text-emerald-400 hover:text-emerald-300 flex items-center gap-1 cursor-pointer"
+                  return (
+                    <div
+                      key={msg.id}
+                      className={`rounded-xl p-3.5 text-sm ${
+                        msg.role === "user"
+                          ? "bg-blue-950/40 border border-blue-900/50 ml-6 text-slate-100"
+                          : "bg-slate-950 border border-slate-800 mr-2 text-slate-100"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2 mb-1.5">
+                        <span
+                          className={`text-[10px] font-semibold uppercase tracking-wider ${
+                            msg.role === "user" ? "text-blue-400" : "text-emerald-400"
+                          }`}
                         >
-                          <Volume2 className="w-3 h-3" />
-                          <span>Dengar</span>
-                        </button>
-                      )}
-                    </div>
+                          {msg.role === "user" ? "Akhi" : "Asisten"} • {msg.timestamp}
+                        </span>
 
-                    <p className="text-xs sm:text-sm leading-relaxed whitespace-pre-line">
-                      {msg.text}
-                    </p>
-                  </div>
-                ))}
+                        {msg.role === "assistant" && (
+                          <div className="flex items-center gap-2.5">
+                            {/* Tombol Simpan Faedah ke Workspace */}
+                            <button
+                              type="button"
+                              disabled={isSavingThis || isSavedThis}
+                              onClick={() => handleSaveFaedahToWorkspace(msg, idx)}
+                              className={`text-[11px] flex items-center gap-1 transition cursor-pointer ${
+                                isSavedThis
+                                  ? "text-amber-400 cursor-default"
+                                  : "text-slate-400 hover:text-amber-300"
+                              }`}
+                              title="Simpan catatan faedah ini ke Workspace Supabase"
+                            >
+                              {isSavingThis ? (
+                                <>
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                  <span>Menyimpan...</span>
+                                </>
+                              ) : isSavedThis ? (
+                                <>
+                                  <Check className="w-3 h-3" />
+                                  <span>Tersimpan</span>
+                                </>
+                              ) : (
+                                <>
+                                  <BookmarkPlus className="w-3 h-3" />
+                                  <span>Simpan Faedah</span>
+                                </>
+                              )}
+                            </button>
+
+                            {/* Tombol Putar Suara */}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                speakReply(
+                                  msg.spokenText || msg.text,
+                                  msg.intent === "general_chat" || msg.intent === "daily_briefing"
+                                )
+                              }
+                              className="text-[11px] text-emerald-400 hover:text-emerald-300 flex items-center gap-1 cursor-pointer"
+                            >
+                              <Volume2 className="w-3 h-3" />
+                              <span>Dengar</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      <p className="text-xs sm:text-sm leading-relaxed whitespace-pre-line">
+                        {msg.text}
+                      </p>
+                    </div>
+                  );
+                })}
                 <div ref={chatEndRef} />
               </div>
             )}
@@ -904,13 +983,13 @@ export default function Home() {
           </div>
         )}
 
-        {/* Tab 3: Workspace Ide */}
+        {/* Tab 3: Workspace Ide & Faedah */}
         {activeTab === "ideas" && (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-semibold flex items-center gap-2">
                 <Lightbulb className="w-4 h-4 text-amber-400" />
-                <span>Workspace Catatan Ide</span>
+                <span>Workspace Ide & Catatan Faedah</span>
               </h2>
               <button
                 type="button"
@@ -921,7 +1000,7 @@ export default function Home() {
                 className="text-xs bg-amber-600 hover:bg-amber-500 text-white px-3 py-1.5 rounded-lg flex items-center gap-1 transition cursor-pointer"
               >
                 <Plus className="w-3.5 h-3.5" />
-                <span>Tulis Ide</span>
+                <span>Tulis Catatan</span>
               </button>
             </div>
 
@@ -934,14 +1013,14 @@ export default function Home() {
                   type="text"
                   value={manualIdeaTitle}
                   onChange={(e) => setManualIdeaTitle(e.target.value)}
-                  placeholder="Judul ide (opsional)..."
+                  placeholder="Judul ide atau catatan (opsional)..."
                   className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-amber-500"
                 />
                 <textarea
                   rows={3}
                   value={manualIdeaContent}
                   onChange={(e) => setManualIdeaContent(e.target.value)}
-                  placeholder="Tuliskan detail konsep atau idemu di sini..."
+                  placeholder="Tuliskan detail konsep, ide, atau faedah di sini..."
                   className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-amber-500"
                 />
 
@@ -965,7 +1044,7 @@ export default function Home() {
                     className="text-xs bg-amber-600 hover:bg-amber-500 disabled:bg-slate-700 text-white px-3.5 py-1.5 rounded-lg font-medium flex items-center gap-1.5 cursor-pointer"
                   >
                     {savingManualIdea && <Loader2 className="w-3 h-3 animate-spin" />}
-                    <span>{savingManualIdea ? "Menyimpan..." : "Simpan Ide"}</span>
+                    <span>{savingManualIdea ? "Menyimpan..." : "Simpan"}</span>
                   </button>
                 </div>
               </form>
@@ -975,7 +1054,7 @@ export default function Home() {
               <p className="text-xs text-slate-500 text-center py-4">Memuat workspace...</p>
             ) : ideas.length === 0 ? (
               <p className="text-xs text-slate-500 text-center py-4">
-                Workspace masih kosong. Ucapkan "Catat ide..." atau klik "+ Tulis Ide".
+                Workspace masih kosong. Ucapkan "Catat ide...", klik "+ Tulis Catatan", atau simpan faedah dari tab Diskusi.
               </p>
             ) : (
               <div className="space-y-3">
@@ -996,7 +1075,7 @@ export default function Home() {
                           type="button"
                           onClick={() => deleteIdea(idea.id)}
                           className="text-slate-600 hover:text-red-400 transition cursor-pointer"
-                          title="Hapus ide"
+                          title="Hapus catatan"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
