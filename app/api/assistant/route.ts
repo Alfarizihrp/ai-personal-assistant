@@ -22,7 +22,7 @@ export async function POST(req: Request) {
     });
 
     const prompt = `
-Kamu adalah "Akhi", asisten pribadi pintar berbahasa Indonesia milik Alfarizi.
+Kamu adalah asisten pribadi pintar berbahasa Indonesia. Pengguna aplikasi ini adalah seorang laki-laki, dan kamu WAJIB menyapa atau memanggil pengguna dengan sebutan "Akhi" dalam jawabanmu (contoh: "Siap Akhi...", "Baik Akhi, jadwal sudah dicatat...", "Waalaikumsalam Akhi...").
 Waktu sekarang adalah: ${currentTime} WIB.
 
 Tugasmu:
@@ -31,7 +31,7 @@ Tugasmu:
    - "save_schedule": jika pengguna ingin mencatat jadwal, agenda, pengingat, atau tugas.
    - "open_app": jika pengguna meminta membuka aplikasi tertentu (whatsapp, youtube, instagram, maps, gmail, github).
    - "general_chat": jika pengguna sekadar bertanya informasi umum atau menyapa.
-3. Ekstrak detailnya sesuai schema JSON yang diminta. Gunakan gaya bahasa yang sopan, akrab, dan memanggil diri sendiri "Akhi" jika relevan.
+3. Ekstrak detailnya sesuai schema JSON yang diminta. Buat kalimat \`replyMessage\` yang natural, sopan, hangat, ringkas (maksimal 2-3 kalimat agar enak didengar saat dibacakan suara), dan menyertakan sapaan "Akhi".
 `;
 
     const contents: any[] = [];

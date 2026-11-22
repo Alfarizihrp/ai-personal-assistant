@@ -12,6 +12,8 @@ import {
   CheckCircle2,
   Circle,
   Trash2,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
@@ -34,19 +36,54 @@ interface ScheduleItem {
 export default function Home() {
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [textCommand, setTextCommand] = useState("");
-  const [statusLog, setStatusLog] = useState("Siap mendengarkan atau menerima ketikan");
+  const [statusLog, setStatusLog] = useState("Siap mendengarkan perintahmu, Akhi");
   const [error, setError] = useState("");
   const [aiResult, setAiResult] = useState<AssistantResponse | null>(null);
 
-  // State untuk daftar jadwal dari Supabase
   const [schedules, setSchedules] = useState<ScheduleItem[]>([]);
   const [loadingSchedules, setLoadingSchedules] = useState(true);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
 
-  // Ambil data jadwal dari Supabase saat halaman dibuka
+  // Fungsi Text-to-Speech (Membacakan balasan AI dengan suara Bahasa Indonesia)
+  const speakReply = (text: string) => {
+    if (!voiceEnabled || typeof window === "undefined" || !("speechSynthesis" in window)) {
+      return;
+    }
+
+    // Hentikan suara sebelumnya jika masih berbicara
+    window.speechSynthesis.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "id-ID";
+    utterance.rate = 1.02; // Kecepatan bicara normal & natural
+    utterance.pitch = 1.0;
+
+    // Cari suara Bahasa Indonesia yang tersedia di perangkat
+    const voices = window.speechSynthesis.getVoices();
+    const idVoice = voices.find((v) => v.lang.includes("id-ID") || v.lang.includes("id_ID"));
+    if (idVoice) {
+      utterance.voice = idVoice;
+    }
+
+    utterance.onstart = () => setIsSpeaking(true);
+    utterance.onend = () => setIsSpeaking(false);
+    utterance.onerror = () => setIsSpeaking(false);
+
+    window.speechSynthesis.speak(utterance);
+  };
+
+  // Memuat daftar suara browser sejak awal
+  useEffect(() => {
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.getVoices();
+    }
+  }, []);
+
   const fetchSchedules = async () => {
     setLoadingSchedules(true);
     const { data, error } = await supabase
@@ -64,7 +101,6 @@ export default function Home() {
     fetchSchedules();
   }, []);
 
-  // Simpan jadwal baru ke Supabase
   const saveScheduleToDb = async (title?: string, time?: string) => {
     if (!title) return;
     const { error } = await supabase.from("schedules").insert([
@@ -75,13 +111,12 @@ export default function Home() {
     ]);
 
     if (!error) {
-      fetchSchedules(); // Refresh daftar jadwal di layar
+      fetchSchedules();
     } else {
       setError(`Gagal menyimpan jadwal ke database: ${error.message}`);
     }
   };
 
-  // Tandai jadwal selesai / belum selesai
   const toggleScheduleDone = async (id: number, currentStatus: boolean) => {
     const { error } = await supabase
       .from("schedules")
@@ -97,7 +132,6 @@ export default function Home() {
     }
   };
 
-  // Hapus jadwal dari Supabase
   const deleteSchedule = async (id: number) => {
     const { error } = await supabase.from("schedules").delete().eq("id", id);
 
@@ -140,7 +174,7 @@ export default function Home() {
     setIsProcessing(true);
     setError("");
     setAiResult(null);
-    setStatusLog("Memproses dengan Gemini...");
+    setStatusLog("Memproses perintah...");
 
     try {
       const res = await fetch("/api/assistant", {
@@ -155,7 +189,11 @@ export default function Home() {
       setAiResult(data);
       setStatusLog("Selesai!");
 
-      // Eksekusi aksi sesuai intent dari Gemini
+      // Bacakan balasan AI dengan suara
+      if (data.replyMessage) {
+        speakReply(data.replyMessage);
+      }
+
       if (data.intent === "open_app") {
         handleOpenApp(data.targetApp);
       } else if (data.intent === "save_schedule") {
@@ -180,6 +218,9 @@ export default function Home() {
   const startRecording = async () => {
     setError("");
     setAiResult(null);
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel(); // Hentikan suara AI jika user mulai bicara
+    }
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -219,16 +260,38 @@ export default function Home() {
     }
   };
 
+  const toggleVoiceOutput = () => {
+    if (voiceEnabled && typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
+    }
+    setVoiceEnabled(!voiceEnabled);
+  };
+
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center py-10 px-4">
       <div className="max-w-md w-full space-y-6">
         {/* Kartu Utama Asisten */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col items-center text-center">
+        <div className="relative bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col items-center text-center">
+          {/* Tombol Mute/Unmute Suara AI */}
+          <button
+            type="button"
+            onClick={toggleVoiceOutput}
+            title={voiceEnabled ? "Matikan suara balasan" : "Nyalakan suara balasan"}
+            className={`absolute top-4 right-4 p-2 rounded-xl border transition cursor-pointer ${
+              voiceEnabled
+                ? "bg-blue-950/50 border-blue-800/60 text-blue-400"
+                : "bg-slate-950 border-slate-800 text-slate-500"
+            }`}
+          >
+            {voiceEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+          </button>
+
           <h1 className="text-2xl font-bold tracking-tight mb-1">
-            Akhi — AI Assistant
+            AI Personal Assistant
           </h1>
           <p className="text-slate-400 text-xs mb-6">
-            Ucapkan jadwal, perintah buka aplikasi, atau pertanyaan
+            Asisten Pribadi untuk Akhi
           </p>
 
           <button
@@ -252,7 +315,9 @@ export default function Home() {
             )}
           </button>
 
-          <p className="mt-3 text-xs text-blue-400 font-mono">{statusLog}</p>
+          <p className="mt-3 text-xs text-blue-400 font-mono">
+            {isSpeaking ? "Asisten sedang berbicara..." : statusLog}
+          </p>
 
           {/* Form Input Teks Pendamping */}
           <form onSubmit={handleTextSubmit} className="w-full mt-5 flex gap-2">
@@ -278,7 +343,7 @@ export default function Home() {
             <div className="w-full mt-5 text-left space-y-2.5 bg-slate-950 border border-slate-800 rounded-xl p-4">
               <div>
                 <span className="text-[10px] uppercase tracking-wider text-slate-500">
-                  Perintah:
+                  Perintah Akhi:
                 </span>
                 <p className="text-sm text-slate-200 italic">
                   "{aiResult.transcript}"
@@ -286,25 +351,38 @@ export default function Home() {
               </div>
 
               <div className="border-t border-slate-800 pt-2.5">
-                <div className="flex items-center gap-2 text-xs font-semibold text-emerald-400 mb-1">
-                  {aiResult.intent === "save_schedule" && (
-                    <>
-                      <Calendar className="w-4 h-4" />
-                      <span>Jadwal Tersimpan ke Database</span>
-                    </>
-                  )}
-                  {aiResult.intent === "open_app" && (
-                    <>
-                      <ExternalLink className="w-4 h-4" />
-                      <span>Membuka Aplikasi ({aiResult.targetApp})</span>
-                    </>
-                  )}
-                  {aiResult.intent === "general_chat" && (
-                    <>
-                      <MessageSquare className="w-4 h-4" />
-                      <span>Respons Asisten</span>
-                    </>
-                  )}
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-emerald-400">
+                    {aiResult.intent === "save_schedule" && (
+                      <>
+                        <Calendar className="w-4 h-4" />
+                        <span>Jadwal Tersimpan</span>
+                      </>
+                    )}
+                    {aiResult.intent === "open_app" && (
+                      <>
+                        <ExternalLink className="w-4 h-4" />
+                        <span>Membuka Aplikasi ({aiResult.targetApp})</span>
+                      </>
+                    )}
+                    {aiResult.intent === "general_chat" && (
+                      <>
+                        <MessageSquare className="w-4 h-4" />
+                        <span>Respons Asisten</span>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Tombol Putar Ulang Suara Balasan */}
+                  <button
+                    type="button"
+                    onClick={() => speakReply(aiResult.replyMessage)}
+                    className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1 cursor-pointer"
+                    title="Dengarkan ulang jawaban"
+                  >
+                    <Volume2 className="w-3.5 h-3.5" />
+                    <span>Putar</span>
+                  </button>
                 </div>
                 <p className="text-sm text-slate-100">{aiResult.replyMessage}</p>
               </div>
@@ -323,7 +401,7 @@ export default function Home() {
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-base font-semibold flex items-center gap-2">
               <Calendar className="w-4 h-4 text-blue-400" />
-              <span>Daftar Jadwal & Agenda</span>
+              <span>Daftar Jadwal & Agenda Akhi</span>
             </h2>
             <span className="text-xs text-slate-500">
               {schedules.length} item
@@ -384,11 +462,12 @@ export default function Home() {
             </ul>
           )}
         </div>
-      {/* Kredit Pembuat */}
-      <footer className="text-center text-xs text-slate-600 pt-2">
-        Akhi AI Personal Assistant • Built by Alfarizi
-      </footer>
-    </div>
-  </main>
+
+        {/* Kredit Pembuat */}
+        <footer className="text-center text-xs text-slate-600 pt-2">
+          Akhi AI Personal Assistant • Built by Alfarizi
+        </footer>
+      </div>
+    </main>
   );
 }
