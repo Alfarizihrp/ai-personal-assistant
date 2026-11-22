@@ -6,7 +6,6 @@ import {
   Square,
   Loader2,
   Calendar,
-  ExternalLink,
   MessageSquare,
   Send,
   CheckCircle2,
@@ -24,6 +23,9 @@ import {
   Sun,
   BookmarkPlus,
   Check,
+  Lock,
+  ShieldCheck,
+  Delete,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
@@ -67,6 +69,14 @@ interface IdeaItem {
 }
 
 export default function Home() {
+  // State Keamanan PIN Lock
+  const [isUnlocked, setIsUnlocked] = useState(false);
+  const [checkingSession, setCheckingSession] = useState(true);
+  const [pinInput, setPinInput] = useState("");
+  const [pinError, setPinError] = useState("");
+  const [verifyingPin, setVerifyingPin] = useState(false);
+
+  // State Asisten Utama
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isBriefingLoading, setIsBriefingLoading] = useState(false);
@@ -81,7 +91,6 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<"chat" | "schedules" | "ideas">("chat");
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
 
-  // State untuk tombol Simpan Faedah pada riwayat diskusi
   const [savingChatId, setSavingChatId] = useState<string | null>(null);
   const [savedChatIds, setSavedChatIds] = useState<Record<string, boolean>>({});
 
@@ -102,14 +111,93 @@ export default function Home() {
   const audioChunksRef = useRef<Blob[]>([]);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
+  // Cek apakah sesi sudah terbuka saat halaman dimuat
   useEffect(() => {
     try {
+      const unlockedSession = sessionStorage.getItem("akhi_assistant_unlocked");
+      if (unlockedSession === "true") {
+        setIsUnlocked(true);
+      }
       const savedChat = localStorage.getItem("akhi_chat_history");
       if (savedChat) {
         setChatHistory(JSON.parse(savedChat));
       }
     } catch {}
+    setCheckingSession(false);
   }, []);
+
+  // Verifikasi PIN ke server
+  const verifyPinCode = async (codeToVerify: string) => {
+    if (verifyingPin || codeToVerify.length < 6) return;
+    setVerifyingPin(true);
+    setPinError("");
+
+    try {
+      const res = await fetch("/api/verify-pin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin: codeToVerify }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        setPinError(data.error || "PIN salah.");
+        setPinInput("");
+        return;
+      }
+
+      sessionStorage.setItem("akhi_assistant_unlocked", "true");
+      setIsUnlocked(true);
+      setPinInput("");
+    } catch {
+      setPinError("Gagal terhubung ke server verifikasi.");
+      setPinInput("");
+    } finally {
+      setVerifyingPin(false);
+    }
+  };
+
+  // Handler tombol angka PIN
+  const handlePinDigit = (digit: string) => {
+    if (verifyingPin || pinInput.length >= 6) return;
+    setPinError("");
+    const nextPin = pinInput + digit;
+    setPinInput(nextPin);
+
+    if (nextPin.length === 6) {
+      verifyPinCode(nextPin);
+    }
+  };
+
+  const handlePinBackspace = () => {
+    if (verifyingPin) return;
+    setPinError("");
+    setPinInput((prev) => prev.slice(0, -1));
+  };
+
+  // Dukungan ketik PIN lewat keyboard fisik saat terkunci
+  useEffect(() => {
+    if (isUnlocked || checkingSession) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key >= "0" && e.key <= "9") {
+        handlePinDigit(e.key);
+      } else if (e.key === "Backspace") {
+        handlePinBackspace();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isUnlocked, checkingSession, pinInput, verifyingPin]);
+
+  const handleLockApp = () => {
+    stopSpeaking();
+    sessionStorage.removeItem("akhi_assistant_unlocked");
+    setIsUnlocked(false);
+    setPinInput("");
+    setPinError("");
+  };
 
   useEffect(() => {
     try {
@@ -193,6 +281,8 @@ export default function Home() {
   };
 
   useEffect(() => {
+    if (!isUnlocked) return;
+
     if (typeof window !== "undefined") {
       if ("speechSynthesis" in window) {
         window.speechSynthesis.getVoices();
@@ -203,9 +293,11 @@ export default function Home() {
       if ("Notification" in window) setNotifPermission(Notification.permission);
     }
     fetchAllData();
-  }, []);
+  }, [isUnlocked]);
 
   useEffect(() => {
+    if (!isUnlocked) return;
+
     const interval = setInterval(async () => {
       const now = new Date().getTime();
 
@@ -243,7 +335,7 @@ export default function Home() {
     }, 30000);
 
     return () => clearInterval(interval);
-  }, [schedules, voiceEnabled]);
+  }, [schedules, voiceEnabled, isUnlocked]);
 
   const fetchAllData = async () => {
     setLoadingData(true);
@@ -258,17 +350,16 @@ export default function Home() {
     return schedRes.data || [];
   };
 
-  // Simpan Faedah Diskusi / Briefing langsung ke Workspace Supabase
   const handleSaveFaedahToWorkspace = async (msg: ChatMessage, index: number) => {
     if (savingChatId || savedChatIds[msg.id]) return;
     setSavingChatId(msg.id);
     setError("");
 
     try {
-      // Cari pesan pertanyaan pengguna tepat sebelum balasan asisten ini sebagai judul
-      const prevUserMsg = index > 0 && chatHistory[index - 1]?.role === "user"
-        ? chatHistory[index - 1].text
-        : "Catatan Faedah Diskusi";
+      const prevUserMsg =
+        index > 0 && chatHistory[index - 1]?.role === "user"
+          ? chatHistory[index - 1].text
+          : "Catatan Faedah Diskusi";
 
       const shortQuestion =
         prevUserMsg.length > 55 ? `${prevUserMsg.slice(0, 55)}...` : prevUserMsg;
@@ -636,11 +727,118 @@ export default function Home() {
     }
   };
 
+  // Tampilan Loading Awal
+  if (checkingSession) {
+    return (
+      <main className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
+      </main>
+    );
+  }
+
+  // Layar Kunci PIN Akses Pribadi
+  if (!isUnlocked) {
+    return (
+      <main className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center px-4">
+        <div className="max-w-xs w-full bg-slate-900 border border-slate-800 rounded-3xl p-7 shadow-2xl flex flex-col items-center text-center">
+          <div className="w-14 h-14 rounded-2xl bg-blue-950/70 border border-blue-800/60 flex items-center justify-center mb-4">
+            {verifyingPin ? (
+              <Loader2 className="w-7 h-7 text-blue-400 animate-spin" />
+            ) : (
+              <ShieldCheck className="w-7 h-7 text-blue-400" />
+            )}
+          </div>
+
+          <h1 className="text-lg font-bold tracking-tight">Akses Pribadi Akhi</h1>
+          <p className="text-xs text-slate-400 mt-1 mb-6">
+            Masukkan 6 digit PIN untuk membuka asisten
+          </p>
+
+          {/* Indikator 6 Titik PIN */}
+          <div className="flex items-center justify-center gap-3 mb-5">
+            {[0, 1, 2, 3, 4, 5].map((idx) => {
+              const isFilled = idx < pinInput.length;
+              return (
+                <div
+                  key={idx}
+                  className={`w-3.5 h-3.5 rounded-full transition-all duration-150 ${
+                    isFilled
+                      ? "bg-blue-500 scale-110 shadow-sm shadow-blue-500/50"
+                      : "bg-slate-800 border border-slate-700"
+                  }`}
+                />
+              );
+            })}
+          </div>
+
+          {pinError && (
+            <p className="text-xs text-red-400 bg-red-950/50 border border-red-900/60 px-3 py-1.5 rounded-lg mb-4 w-full">
+              {pinError}
+            </p>
+          )}
+
+          {/* Keypad Angka */}
+          <div className="grid grid-cols-3 gap-2.5 w-full">
+            {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((num) => (
+              <button
+                key={num}
+                type="button"
+                disabled={verifyingPin}
+                onClick={() => handlePinDigit(num)}
+                className="h-14 rounded-2xl bg-slate-950 hover:bg-slate-800 active:scale-95 border border-slate-800/90 text-lg font-semibold text-slate-100 transition cursor-pointer disabled:opacity-50"
+              >
+                {num}
+              </button>
+            ))}
+
+            <div className="h-14" />
+
+            <button
+              type="button"
+              disabled={verifyingPin}
+              onClick={() => handlePinDigit("0")}
+              className="h-14 rounded-2xl bg-slate-950 hover:bg-slate-800 active:scale-95 border border-slate-800/90 text-lg font-semibold text-slate-100 transition cursor-pointer disabled:opacity-50"
+            >
+              0
+            </button>
+
+            <button
+              type="button"
+              disabled={verifyingPin || pinInput.length === 0}
+              onClick={handlePinBackspace}
+              className="h-14 rounded-2xl bg-slate-950 hover:bg-slate-800 active:scale-95 border border-slate-800/90 flex items-center justify-center text-slate-400 hover:text-red-400 transition cursor-pointer disabled:opacity-40"
+              title="Hapus digit"
+            >
+              <Delete className="w-5 h-5" />
+            </button>
+          </div>
+
+          <p className="text-[11px] text-slate-600 mt-6">
+            AI Personal Assistant • Built by Alfarizi
+          </p>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center py-8 px-4">
       <div className="max-w-md w-full space-y-5">
         {/* Kartu Utama Asisten */}
         <div className="relative bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col items-center text-center">
+          {/* Tombol Kunci Manual di Pojok Kiri Atas */}
+          <div className="absolute top-4 left-4">
+            <button
+              type="button"
+              onClick={handleLockApp}
+              title="Kunci layar aplikasi"
+              className="p-2 rounded-xl border bg-slate-950 border-slate-800 text-slate-400 hover:text-red-400 hover:border-red-900/60 transition cursor-pointer"
+            >
+              <Lock className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Tombol Notifikasi & Suara di Pojok Kanan Atas */}
           <div className="absolute top-4 right-4 flex items-center gap-1.5">
             {notifPermission !== "granted" && (
               <button
@@ -669,7 +867,7 @@ export default function Home() {
             </button>
           </div>
 
-          <h1 className="text-2xl font-bold tracking-tight mb-1">
+          <h1 className="text-2xl font-bold tracking-tight mb-1 mt-2">
             AI Personal Assistant
           </h1>
           <p className="text-slate-400 text-xs mb-6">
@@ -850,7 +1048,6 @@ export default function Home() {
 
                         {msg.role === "assistant" && (
                           <div className="flex items-center gap-2.5">
-                            {/* Tombol Simpan Faedah ke Workspace */}
                             <button
                               type="button"
                               disabled={isSavingThis || isSavedThis}
@@ -880,7 +1077,6 @@ export default function Home() {
                               )}
                             </button>
 
-                            {/* Tombol Putar Suara */}
                             <button
                               type="button"
                               onClick={() =>
