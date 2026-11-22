@@ -522,17 +522,17 @@ export default function Home() {
             </button>
           </form>
 
-          {aiResult && (
+       {aiResult && (
             <div className="w-full mt-5 text-left space-y-2.5 bg-slate-950 border border-slate-800 rounded-xl p-4">
               <div>
                 <span className="text-[10px] uppercase tracking-wider text-slate-500">
-                  Perintah Akhi:
+                  Pertanyaan / Perintah Akhi:
                 </span>
                 <p className="text-sm text-slate-200 italic">"{aiResult.transcript}"</p>
               </div>
 
               <div className="border-t border-slate-800 pt-2.5">
-                <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center justify-between mb-1.5">
                   <div className="flex items-center gap-2 text-xs font-semibold text-emerald-400">
                     {aiResult.intent === "save_schedule" && (
                       <>
@@ -555,25 +555,42 @@ export default function Home() {
                     {aiResult.intent === "general_chat" && (
                       <>
                         <MessageSquare className="w-4 h-4" />
-                        <span>Respons Asisten</span>
+                        <span>Diskusi & Dalil</span>
                       </>
                     )}
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => speakReply(aiResult.replyMessage)}
-                    className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1 cursor-pointer"
-                  >
-                    <Volume2 className="w-3.5 h-3.5" />
-                    <span>Putar</span>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {isSpeaking ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          window.speechSynthesis.cancel();
+                          setIsSpeaking(false);
+                        }}
+                        className="text-xs text-red-400 hover:text-red-300 flex items-center gap-1 cursor-pointer"
+                      >
+                        <VolumeX className="w-3.5 h-3.5" />
+                        <span>Stop</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => speakReply(aiResult.replyMessage)}
+                        className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1 cursor-pointer"
+                      >
+                        <Volume2 className="w-3.5 h-3.5" />
+                        <span>Putar</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <p className="text-sm text-slate-100">{aiResult.replyMessage}</p>
+                <p className="text-sm text-slate-100 leading-relaxed whitespace-pre-line">
+                  {aiResult.replyMessage}
+                </p>
               </div>
             </div>
           )}
-
           {error && (
             <p className="mt-4 text-xs text-red-400 bg-red-950/50 border border-red-900 px-3 py-2 rounded-lg">
               {error}
