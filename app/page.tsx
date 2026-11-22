@@ -26,6 +26,8 @@ import {
   Lock,
   ShieldCheck,
   Delete,
+  Pencil,
+  X,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
@@ -98,6 +100,18 @@ export default function Home() {
   const [ideas, setIdeas] = useState<IdeaItem[]>([]);
   const [loadingData, setLoadingData] = useState(true);
 
+  // State Edit Jadwal
+  const [editingScheduleId, setEditingScheduleId] = useState<number | null>(null);
+  const [editScheduleTitle, setEditScheduleTitle] = useState("");
+  const [editScheduleTime, setEditScheduleTime] = useState("");
+  const [savingEditSchedule, setSavingEditSchedule] = useState(false);
+
+  // State Edit Catatan Ide / Faedah
+  const [editingIdeaId, setEditingIdeaId] = useState<number | null>(null);
+  const [editIdeaTitle, setEditIdeaTitle] = useState("");
+  const [editIdeaContent, setEditIdeaContent] = useState("");
+  const [savingEditIdea, setSavingEditIdea] = useState(false);
+
   const [expandingIdeaId, setExpandingIdeaId] = useState<number | null>(null);
   const [collapsedExpansions, setCollapsedExpansions] = useState<Record<number, boolean>>({});
 
@@ -111,7 +125,6 @@ export default function Home() {
   const audioChunksRef = useRef<Blob[]>([]);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
-  // Cek apakah sesi sudah terbuka saat halaman dimuat
   useEffect(() => {
     try {
       const unlockedSession = sessionStorage.getItem("akhi_assistant_unlocked");
@@ -126,7 +139,6 @@ export default function Home() {
     setCheckingSession(false);
   }, []);
 
-  // Verifikasi PIN ke server
   const verifyPinCode = async (codeToVerify: string) => {
     if (verifyingPin || codeToVerify.length < 6) return;
     setVerifyingPin(true);
@@ -157,7 +169,6 @@ export default function Home() {
     }
   };
 
-  // Handler tombol angka PIN
   const handlePinDigit = (digit: string) => {
     if (verifyingPin || pinInput.length >= 6) return;
     setPinError("");
@@ -175,7 +186,6 @@ export default function Home() {
     setPinInput((prev) => prev.slice(0, -1));
   };
 
-  // Dukungan ketik PIN lewat keyboard fisik saat terkunci
   useEffect(() => {
     if (isUnlocked || checkingSession) return;
 
@@ -348,6 +358,102 @@ export default function Home() {
     if (!ideaRes.error && ideaRes.data) setIdeas(ideaRes.data);
     setLoadingData(false);
     return schedRes.data || [];
+  };
+
+  // --- FUNGSI EDIT JADWAL ---
+  const startEditingSchedule = (item: ScheduleItem) => {
+    setEditingScheduleId(item.id);
+    setEditScheduleTitle(item.title);
+    setEditScheduleTime(item.schedule_time);
+    setError("");
+  };
+
+  const cancelEditingSchedule = () => {
+    setEditingScheduleId(null);
+    setEditScheduleTitle("");
+    setEditScheduleTime("");
+  };
+
+  const handleSaveScheduleEdit = async (id: number) => {
+    if (!editScheduleTitle.trim() || savingEditSchedule) return;
+    setSavingEditSchedule(true);
+    setError("");
+
+    try {
+      const updatedTitle = editScheduleTitle.trim();
+      const updatedTime = editScheduleTime.trim() || "Waktu belum ditentukan";
+
+      const { error: dbErr } = await supabase
+        .from("schedules")
+        .update({
+          title: updatedTitle,
+          schedule_time: updatedTime,
+        })
+        .eq("id", id);
+
+      if (dbErr) throw new Error(dbErr.message);
+
+      setSchedules((prev) =>
+        prev.map((item) =>
+          item.id === id
+            ? { ...item, title: updatedTitle, schedule_time: updatedTime }
+            : item
+        )
+      );
+      cancelEditingSchedule();
+    } catch (err: any) {
+      setError(`Gagal memperbarui jadwal: ${err.message}`);
+    } finally {
+      setSavingEditSchedule(false);
+    }
+  };
+
+  // --- FUNGSI EDIT CATATAN IDE / FAEDAH ---
+  const startEditingIdea = (idea: IdeaItem) => {
+    setEditingIdeaId(idea.id);
+    setEditIdeaTitle(idea.title);
+    setEditIdeaContent(idea.content);
+    setError("");
+  };
+
+  const cancelEditingIdea = () => {
+    setEditingIdeaId(null);
+    setEditIdeaTitle("");
+    setEditIdeaContent("");
+  };
+
+  const handleSaveIdeaEdit = async (id: number) => {
+    if (!editIdeaContent.trim() || savingEditIdea) return;
+    setSavingEditIdea(true);
+    setError("");
+
+    try {
+      const updatedTitle = editIdeaTitle.trim() || "Catatan Ide";
+      const updatedContent = editIdeaContent.trim();
+
+      const { error: dbErr } = await supabase
+        .from("ideas")
+        .update({
+          title: updatedTitle,
+          content: updatedContent,
+        })
+        .eq("id", id);
+
+      if (dbErr) throw new Error(dbErr.message);
+
+      setIdeas((prev) =>
+        prev.map((item) =>
+          item.id === id
+            ? { ...item, title: updatedTitle, content: updatedContent }
+            : item
+        )
+      );
+      cancelEditingIdea();
+    } catch (err: any) {
+      setError(`Gagal memperbarui catatan: ${err.message}`);
+    } finally {
+      setSavingEditIdea(false);
+    }
   };
 
   const handleSaveFaedahToWorkspace = async (msg: ChatMessage, index: number) => {
@@ -560,12 +666,18 @@ export default function Home() {
 
   const deleteSchedule = async (id: number) => {
     const { error } = await supabase.from("schedules").delete().eq("id", id);
-    if (!error) setSchedules((prev) => prev.filter((item) => item.id !== id));
+    if (!error) {
+      setSchedules((prev) => prev.filter((item) => item.id !== id));
+      if (editingScheduleId === id) cancelEditingSchedule();
+    }
   };
 
   const deleteIdea = async (id: number) => {
     const { error } = await supabase.from("ideas").delete().eq("id", id);
-    if (!error) setIdeas((prev) => prev.filter((item) => item.id !== id));
+    if (!error) {
+      setIdeas((prev) => prev.filter((item) => item.id !== id));
+      if (editingIdeaId === id) cancelEditingIdea();
+    }
   };
 
   const clearChatHistory = () => {
@@ -727,7 +839,6 @@ export default function Home() {
     }
   };
 
-  // Tampilan Loading Awal
   if (checkingSession) {
     return (
       <main className="min-h-screen bg-slate-950 flex items-center justify-center">
@@ -736,7 +847,6 @@ export default function Home() {
     );
   }
 
-  // Layar Kunci PIN Akses Pribadi
   if (!isUnlocked) {
     return (
       <main className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center px-4">
@@ -754,7 +864,6 @@ export default function Home() {
             Masukkan 6 digit PIN untuk membuka asisten
           </p>
 
-          {/* Indikator 6 Titik PIN */}
           <div className="flex items-center justify-center gap-3 mb-5">
             {[0, 1, 2, 3, 4, 5].map((idx) => {
               const isFilled = idx < pinInput.length;
@@ -777,7 +886,6 @@ export default function Home() {
             </p>
           )}
 
-          {/* Keypad Angka */}
           <div className="grid grid-cols-3 gap-2.5 w-full">
             {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((num) => (
               <button
@@ -826,7 +934,6 @@ export default function Home() {
       <div className="max-w-md w-full space-y-5">
         {/* Kartu Utama Asisten */}
         <div className="relative bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col items-center text-center">
-          {/* Tombol Kunci Manual di Pojok Kiri Atas */}
           <div className="absolute top-4 left-4">
             <button
               type="button"
@@ -838,7 +945,6 @@ export default function Home() {
             </button>
           </div>
 
-          {/* Tombol Notifikasi & Suara di Pojok Kanan Atas */}
           <div className="absolute top-4 right-4 flex items-center gap-1.5">
             {notifPermission !== "granted" && (
               <button
@@ -928,7 +1034,6 @@ export default function Home() {
             </button>
           </form>
 
-          {/* Tombol Cepat Daily Briefing */}
           <button
             type="button"
             disabled={isProcessing || isRecording || isBriefingLoading}
@@ -1106,7 +1211,7 @@ export default function Home() {
           </div>
         )}
 
-        {/* Tab 2: Daftar Jadwal */}
+        {/* Tab 2: Daftar Jadwal (Dengan Fitur Edit) */}
         {activeTab === "schedules" && (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
             <div className="flex items-center justify-between mb-4">
@@ -1133,53 +1238,112 @@ export default function Home() {
               </p>
             ) : (
               <ul className="space-y-2.5">
-                {schedules.map((item) => (
-                  <li
-                    key={item.id}
-                    className="flex items-center justify-between gap-3 bg-slate-950 border border-slate-800/80 rounded-xl p-3"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => toggleScheduleDone(item.id, item.is_done)}
-                      className="flex items-start gap-3 text-left flex-1 cursor-pointer"
-                    >
-                      {item.is_done ? (
-                        <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0 mt-0.5" />
-                      ) : (
-                        <Circle className="w-5 h-5 text-slate-600 shrink-0 mt-0.5" />
-                      )}
-                      <div>
-                        <p
-                          className={`text-sm font-medium ${
-                            item.is_done ? "line-through text-slate-500" : "text-slate-100"
-                          }`}
-                        >
-                          {item.title}
-                        </p>
-                        <p className="text-xs text-blue-400 mt-0.5">{item.schedule_time}</p>
-                        {item.target_datetime && !item.is_done && (
-                          <span className="inline-block mt-1 text-[10px] px-2 py-0.5 rounded bg-blue-950/60 text-blue-300 border border-blue-900/50">
-                            {item.reminded ? "Sudah diingatkan" : "Pengingat aktif (H-15 mnt)"}
-                          </span>
-                        )}
-                      </div>
-                    </button>
+                {schedules.map((item) => {
+                  const isEditingThis = editingScheduleId === item.id;
 
-                    <button
-                      type="button"
-                      onClick={() => deleteSchedule(item.id)}
-                      className="text-slate-600 hover:text-red-400 p-1 transition cursor-pointer"
+                  return (
+                    <li
+                      key={item.id}
+                      className="bg-slate-950 border border-slate-800/80 rounded-xl p-3"
                     >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </li>
-                ))}
+                      {isEditingThis ? (
+                        <div className="space-y-2">
+                          <input
+                            type="text"
+                            value={editScheduleTitle}
+                            onChange={(e) => setEditScheduleTitle(e.target.value)}
+                            placeholder="Nama agenda..."
+                            className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-blue-500"
+                          />
+                          <input
+                            type="text"
+                            value={editScheduleTime}
+                            onChange={(e) => setEditScheduleTime(e.target.value)}
+                            placeholder="Waktu agenda (misal: Besok jam 08.00 WIB)..."
+                            className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-blue-500"
+                          />
+                          <div className="flex justify-end gap-1.5 pt-1">
+                            <button
+                              type="button"
+                              onClick={cancelEditingSchedule}
+                              className="text-[11px] text-slate-400 hover:text-slate-200 px-2.5 py-1 rounded flex items-center gap-1 cursor-pointer"
+                            >
+                              <X className="w-3 h-3" />
+                              <span>Batal</span>
+                            </button>
+                            <button
+                              type="button"
+                              disabled={savingEditSchedule || !editScheduleTitle.trim()}
+                              onClick={() => handleSaveScheduleEdit(item.id)}
+                              className="text-[11px] bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 text-white px-3 py-1 rounded flex items-center gap-1 cursor-pointer"
+                            >
+                              {savingEditSchedule ? (
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                              ) : (
+                                <Check className="w-3 h-3" />
+                              )}
+                              <span>Simpan</span>
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between gap-3">
+                          <button
+                            type="button"
+                            onClick={() => toggleScheduleDone(item.id, item.is_done)}
+                            className="flex items-start gap-3 text-left flex-1 cursor-pointer"
+                          >
+                            {item.is_done ? (
+                              <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0 mt-0.5" />
+                            ) : (
+                              <Circle className="w-5 h-5 text-slate-600 shrink-0 mt-0.5" />
+                            )}
+                            <div>
+                              <p
+                                className={`text-sm font-medium ${
+                                  item.is_done ? "line-through text-slate-500" : "text-slate-100"
+                                }`}
+                              >
+                                {item.title}
+                              </p>
+                              <p className="text-xs text-blue-400 mt-0.5">{item.schedule_time}</p>
+                              {item.target_datetime && !item.is_done && (
+                                <span className="inline-block mt-1 text-[10px] px-2 py-0.5 rounded bg-blue-950/60 text-blue-300 border border-blue-900/50">
+                                  {item.reminded ? "Sudah diingatkan" : "Pengingat aktif (H-15 mnt)"}
+                                </span>
+                              )}
+                            </div>
+                          </button>
+
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => startEditingSchedule(item)}
+                              className="text-slate-500 hover:text-blue-400 p-1.5 transition cursor-pointer"
+                              title="Edit jadwal"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => deleteSchedule(item.id)}
+                              className="text-slate-600 hover:text-red-400 p-1.5 transition cursor-pointer"
+                              title="Hapus jadwal"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>
         )}
 
-        {/* Tab 3: Workspace Ide & Faedah */}
+        {/* Tab 3: Workspace Ide & Faedah (Dengan Fitur Edit) */}
         {activeTab === "ideas" && (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
             <div className="flex items-center justify-between">
@@ -1257,88 +1421,143 @@ export default function Home() {
                 {ideas.map((idea) => {
                   const isExpanding = expandingIdeaId === idea.id;
                   const isCollapsed = collapsedExpansions[idea.id];
+                  const isEditingThis = editingIdeaId === idea.id;
 
                   return (
                     <div
                       key={idea.id}
                       className="bg-slate-950 border border-slate-800/80 rounded-xl p-3.5 space-y-2.5"
                     >
-                      <div className="flex items-start justify-between gap-2">
-                        <h3 className="text-sm font-semibold text-amber-300">
-                          {idea.title}
-                        </h3>
-                        <button
-                          type="button"
-                          onClick={() => deleteIdea(idea.id)}
-                          className="text-slate-600 hover:text-red-400 transition cursor-pointer"
-                          title="Hapus catatan"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-
-                      <p className="text-xs text-slate-300 leading-relaxed whitespace-pre-line">
-                        {idea.content}
-                      </p>
-
-                      <div className="flex items-center justify-between pt-2 border-t border-slate-900">
-                        <span className="text-[10px] text-slate-600">
-                          {new Date(idea.created_at).toLocaleDateString("id-ID", {
-                            day: "numeric",
-                            month: "short",
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
-                        </span>
-
-                        <div className="flex items-center gap-2">
-                          {idea.ai_expansion && (
+                      {isEditingThis ? (
+                        <div className="space-y-2.5">
+                          <input
+                            type="text"
+                            value={editIdeaTitle}
+                            onChange={(e) => setEditIdeaTitle(e.target.value)}
+                            placeholder="Judul catatan..."
+                            className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-amber-500"
+                          />
+                          <textarea
+                            rows={4}
+                            value={editIdeaContent}
+                            onChange={(e) => setEditIdeaContent(e.target.value)}
+                            placeholder="Isi catatan atau konsep ide..."
+                            className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-amber-500"
+                          />
+                          <div className="flex justify-end gap-2">
                             <button
                               type="button"
-                              onClick={() => toggleCollapseExpansion(idea.id)}
-                              className="text-[11px] text-slate-400 hover:text-slate-200 flex items-center gap-0.5 cursor-pointer"
+                              onClick={cancelEditingIdea}
+                              className="text-xs text-slate-400 hover:text-slate-200 px-3 py-1 rounded flex items-center gap-1 cursor-pointer"
                             >
-                              {isCollapsed ? (
-                                <>
-                                  <ChevronDown className="w-3.5 h-3.5" />
-                                  <span>Lihat Rincian</span>
-                                </>
-                              ) : (
-                                <>
-                                  <ChevronUp className="w-3.5 h-3.5" />
-                                  <span>Sembunyikan</span>
-                                </>
-                              )}
+                              <X className="w-3.5 h-3.5" />
+                              <span>Batal</span>
                             </button>
+                            <button
+                              type="button"
+                              disabled={savingEditIdea || !editIdeaContent.trim()}
+                              onClick={() => handleSaveIdeaEdit(idea.id)}
+                              className="text-xs bg-amber-600 hover:bg-amber-500 disabled:bg-slate-700 text-white px-3.5 py-1 rounded-lg font-medium flex items-center gap-1 cursor-pointer"
+                            >
+                              {savingEditIdea ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Check className="w-3.5 h-3.5" />
+                              )}
+                              <span>Simpan Perubahan</span>
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="flex items-start justify-between gap-2">
+                            <h3 className="text-sm font-semibold text-amber-300">
+                              {idea.title}
+                            </h3>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => startEditingIdea(idea)}
+                                className="text-slate-500 hover:text-amber-300 p-1 transition cursor-pointer"
+                                title="Edit catatan"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => deleteIdea(idea.id)}
+                                className="text-slate-600 hover:text-red-400 p-1 transition cursor-pointer"
+                                title="Hapus catatan"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          <p className="text-xs text-slate-300 leading-relaxed whitespace-pre-line">
+                            {idea.content}
+                          </p>
+
+                          <div className="flex items-center justify-between pt-2 border-t border-slate-900">
+                            <span className="text-[10px] text-slate-600">
+                              {new Date(idea.created_at).toLocaleDateString("id-ID", {
+                                day: "numeric",
+                                month: "short",
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}
+                            </span>
+
+                            <div className="flex items-center gap-2">
+                              {idea.ai_expansion && (
+                                <button
+                                  type="button"
+                                  onClick={() => toggleCollapseExpansion(idea.id)}
+                                  className="text-[11px] text-slate-400 hover:text-slate-200 flex items-center gap-0.5 cursor-pointer"
+                                >
+                                  {isCollapsed ? (
+                                    <>
+                                      <ChevronDown className="w-3.5 h-3.5" />
+                                      <span>Lihat Rincian</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <ChevronUp className="w-3.5 h-3.5" />
+                                      <span>Sembunyikan</span>
+                                    </>
+                                  )}
+                                </button>
+                              )}
+
+                              <button
+                                type="button"
+                                disabled={expandingIdeaId !== null}
+                                onClick={() => handleExpandIdea(idea)}
+                                className="text-[11px] bg-amber-950/60 hover:bg-amber-900/70 border border-amber-700/50 text-amber-300 px-2.5 py-1 rounded-lg flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
+                              >
+                                {isExpanding ? (
+                                  <>
+                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                    <span>Menjabarkan...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Sparkles className="w-3 h-3" />
+                                    <span>
+                                      {idea.ai_expansion ? "Kembangkan Ulang" : "Kembangkan dengan AI"}
+                                    </span>
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          </div>
+
+                          {idea.ai_expansion && !isCollapsed && (
+                            <div className="mt-2 p-3 bg-slate-900/90 border border-amber-900/40 rounded-lg text-xs text-slate-200 leading-relaxed whitespace-pre-line">
+                              {idea.ai_expansion}
+                            </div>
                           )}
-
-                          <button
-                            type="button"
-                            disabled={expandingIdeaId !== null}
-                            onClick={() => handleExpandIdea(idea)}
-                            className="text-[11px] bg-amber-950/60 hover:bg-amber-900/70 border border-amber-700/50 text-amber-300 px-2.5 py-1 rounded-lg flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
-                          >
-                            {isExpanding ? (
-                              <>
-                                <Loader2 className="w-3 h-3 animate-spin" />
-                                <span>Menjabarkan...</span>
-                              </>
-                            ) : (
-                              <>
-                                <Sparkles className="w-3 h-3" />
-                                <span>
-                                  {idea.ai_expansion ? "Kembangkan Ulang" : "Kembangkan dengan AI"}
-                                </span>
-                              </>
-                            )}
-                          </button>
-                        </div>
-                      </div>
-
-                      {idea.ai_expansion && !isCollapsed && (
-                        <div className="mt-2 p-3 bg-slate-900/90 border border-amber-900/40 rounded-lg text-xs text-slate-200 leading-relaxed whitespace-pre-line">
-                          {idea.ai_expansion}
-                        </div>
+                        </>
                       )}
                     </div>
                   );
