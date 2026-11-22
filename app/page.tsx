@@ -21,12 +21,13 @@ import {
   ChevronDown,
   ChevronUp,
   RotateCcw,
+  Sun,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
 interface AssistantResponse {
   transcript: string;
-  intent: "save_schedule" | "save_idea" | "open_app" | "general_chat";
+  intent: "save_schedule" | "save_idea" | "open_app" | "daily_briefing" | "general_chat";
   taskTitle?: string;
   scheduleTime?: string;
   isoDateTime?: string;
@@ -66,6 +67,7 @@ interface IdeaItem {
 export default function Home() {
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isBriefingLoading, setIsBriefingLoading] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [notifPermission, setNotifPermission] = useState<string>("default");
@@ -110,15 +112,13 @@ export default function Home() {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatHistory]);
 
-  // Fungsi TTS Bahasa Indonesia dengan pembawaan tenang & berwibawa
-  const speakReply = (text: string, isDiscussion: boolean = false) => {
+  const speakReply = (text: string, isCalmStyle: boolean = false) => {
     if (!voiceEnabled || typeof window === "undefined" || !("speechSynthesis" in window)) {
       return;
     }
 
     window.speechSynthesis.cancel();
 
-    // Bersihkan karakter Arab atau simbol markdown yang tersisa agar suara Indonesia tidak gagap
     const cleanText = text
       .replace(/[\u0600-\u06FF]/g, "")
       .replace(/[*#_`]/g, "")
@@ -142,12 +142,10 @@ export default function Home() {
       utterance.voice = idVoice;
     }
 
-    if (isDiscussion) {
-      // Gaya penyampaian kajian asatidzah Indonesia: lebih tuma'ninah, teduh, dan berwibawa
+    if (isCalmStyle) {
       utterance.rate = 0.90;
       utterance.pitch = 0.90;
     } else {
-      // Gaya asisten harian: lugas dan jelas
       utterance.rate = 0.98;
       utterance.pitch = 0.96;
     }
@@ -251,6 +249,61 @@ export default function Home() {
     if (!schedRes.error && schedRes.data) setSchedules(schedRes.data);
     if (!ideaRes.error && ideaRes.data) setIdeas(ideaRes.data);
     setLoadingData(false);
+    return schedRes.data || [];
+  };
+
+  // Fungsi Daily Briefing (Ringkasan Agenda & Faedah Ilmu)
+  const triggerDailyBriefing = async (customTranscript?: string) => {
+    if (isBriefingLoading || isProcessing) return;
+    setIsBriefingLoading(true);
+    setError("");
+    stopSpeaking();
+    setStatusLog("Menyiapkan ringkasan agenda & faedah...");
+
+    try {
+      // Ambil data jadwal terbaru dari Supabase
+      const latestSchedules = await fetchAllData();
+
+      const res = await fetch("/api/daily-briefing", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ schedules: latestSchedules }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Gagal memuat Daily Briefing.");
+
+      const timeStr = new Date().toLocaleTimeString("id-ID", {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+
+      const userMsg: ChatMessage = {
+        id: `${Date.now()}-ub`,
+        role: "user",
+        text: customTranscript || "Briefing Agenda & Faedah Hari Ini",
+        timestamp: timeStr,
+      };
+      const aiMsg: ChatMessage = {
+        id: `${Date.now()}-ab`,
+        role: "assistant",
+        text: data.replyMessage,
+        spokenText: data.spokenText || data.replyMessage,
+        intent: "daily_briefing",
+        timestamp: timeStr,
+      };
+
+      setChatHistory((prev) => [...prev, userMsg, aiMsg]);
+      setActiveTab("chat");
+      setStatusLog("Briefing siap!");
+
+      speakReply(data.spokenText || data.replyMessage, true);
+    } catch (err: any) {
+      setError(err.message);
+      setStatusLog("Gagal menyiapkan briefing.");
+    } finally {
+      setIsBriefingLoading(false);
+    }
   };
 
   const saveScheduleToDb = async (title?: string, time?: string, isoDateTime?: string) => {
@@ -434,6 +487,13 @@ export default function Home() {
       const data: AssistantResponse & { error?: string } = await res.json();
       if (!res.ok) throw new Error(data.error || "Terjadi kesalahan pada server.");
 
+      // Jika pengguna meminta ringkasan hari ini lewat suara/teks, arahkan ke fungsi Daily Briefing
+      if (data.intent === "daily_briefing") {
+        setIsProcessing(false);
+        await triggerDailyBriefing(data.transcript);
+        return;
+      }
+
       const timeStr = new Date().toLocaleTimeString("id-ID", {
         hour: "2-digit",
         minute: "2-digit",
@@ -526,7 +586,7 @@ export default function Home() {
   };
 
   const toggleRecording = () => {
-    if (isProcessing) return;
+    if (isProcessing || isBriefingLoading) return;
     if (isRecording) {
       mediaRecorderRef.current?.stop();
       setIsRecording(false);
@@ -577,17 +637,17 @@ export default function Home() {
 
           <button
             type="button"
-            disabled={isProcessing}
+            disabled={isProcessing || isBriefingLoading}
             onClick={toggleRecording}
             className={`w-20 h-20 rounded-full flex items-center justify-center transition-all duration-300 shadow-lg cursor-pointer ${
-              isProcessing
+              isProcessing || isBriefingLoading
                 ? "bg-slate-700 cursor-not-allowed"
                 : isRecording
                 ? "bg-red-500 hover:bg-red-600 animate-pulse shadow-red-500/40"
                 : "bg-blue-600 hover:bg-blue-500 shadow-blue-600/30"
             }`}
           >
-            {isProcessing ? (
+            {isProcessing || isBriefingLoading ? (
               <Loader2 className="w-8 h-8 text-blue-400 animate-spin" />
             ) : isRecording ? (
               <Square className="w-8 h-8 text-white fill-white" />
@@ -617,17 +677,37 @@ export default function Home() {
               value={textCommand}
               onChange={(e) => setTextCommand(e.target.value)}
               placeholder="Tanya dalil, catat jadwal, atau ide..."
-              disabled={isProcessing || isRecording}
+              disabled={isProcessing || isRecording || isBriefingLoading}
               className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500"
             />
             <button
               type="submit"
-              disabled={isProcessing || isRecording || !textCommand.trim()}
+              disabled={isProcessing || isRecording || isBriefingLoading || !textCommand.trim()}
               className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 disabled:text-slate-600 text-white px-4 rounded-xl flex items-center justify-center transition cursor-pointer"
             >
               <Send className="w-4 h-4" />
             </button>
           </form>
+
+          {/* Tombol Cepat Daily Briefing */}
+          <button
+            type="button"
+            disabled={isProcessing || isRecording || isBriefingLoading}
+            onClick={() => triggerDailyBriefing()}
+            className="w-full mt-3 py-2.5 px-4 rounded-xl bg-gradient-to-r from-emerald-950/80 to-teal-950/80 hover:from-emerald-900/80 hover:to-teal-900/80 border border-emerald-800/60 text-emerald-300 text-xs font-medium flex items-center justify-center gap-2 transition cursor-pointer disabled:opacity-50"
+          >
+            {isBriefingLoading ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>Menyusun Briefing Hari Ini...</span>
+              </>
+            ) : (
+              <>
+                <Sun className="w-4 h-4 text-amber-400" />
+                <span>Briefing Agenda & Faedah Hari Ini</span>
+              </>
+            )}
+          </button>
 
           {error && (
             <p className="mt-4 text-xs text-red-400 bg-red-950/50 border border-red-900 px-3 py-2 rounded-lg">
@@ -684,7 +764,7 @@ export default function Home() {
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-semibold flex items-center gap-2">
                 <MessageSquare className="w-4 h-4 text-emerald-400" />
-                <span>Riwayat Diskusi & Dalil</span>
+                <span>Riwayat Diskusi & Briefing</span>
               </h2>
               {chatHistory.length > 0 && (
                 <button
@@ -701,7 +781,7 @@ export default function Home() {
 
             {chatHistory.length === 0 ? (
               <p className="text-xs text-slate-500 text-center py-6 leading-relaxed">
-                Belum ada diskusi, Akhi. Coba tanyakan seputar adab menuntut ilmu, hukum ibadah, atau nasihat harian.
+                Belum ada diskusi, Akhi. Klik tombol "Briefing Agenda & Faedah Hari Ini" di atas atau ajukan pertanyaan seputar ilmu & adab.
               </p>
             ) : (
               <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
@@ -729,7 +809,7 @@ export default function Home() {
                           onClick={() =>
                             speakReply(
                               msg.spokenText || msg.text,
-                              msg.intent === "general_chat"
+                              msg.intent === "general_chat" || msg.intent === "daily_briefing"
                             )
                           }
                           className="text-[11px] text-emerald-400 hover:text-emerald-300 flex items-center gap-1 cursor-pointer"
