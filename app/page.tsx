@@ -24,11 +24,6 @@ import {
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
-interface SpokenSegment {
-  lang: "id" | "ar";
-  text: string;
-}
-
 interface AssistantResponse {
   transcript: string;
   intent: "save_schedule" | "save_idea" | "open_app" | "general_chat";
@@ -39,14 +34,14 @@ interface AssistantResponse {
   ideaContent?: string;
   targetApp?: string;
   replyMessage: string;
-  spokenSegments?: SpokenSegment[];
+  spokenText?: string;
 }
 
 interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   text: string;
-  segments?: SpokenSegment[];
+  spokenText?: string;
   intent?: string;
   timestamp: string;
 }
@@ -98,7 +93,6 @@ export default function Home() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
-  const speechQueueIdRef = useRef<number>(0);
 
   useEffect(() => {
     try {
@@ -116,14 +110,25 @@ export default function Home() {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatHistory]);
 
-  // Mesin Pembaca Suara Ganda (Otomatis ganti ke suara Arab ar-SA untuk dalil/hadits)
-  const speakSegments = (segments: SpokenSegment[]) => {
+  // Fungsi TTS Bahasa Indonesia dengan pembawaan tenang & berwibawa
+  const speakReply = (text: string, isDiscussion: boolean = false) => {
     if (!voiceEnabled || typeof window === "undefined" || !("speechSynthesis" in window)) {
       return;
     }
 
     window.speechSynthesis.cancel();
-    const currentQueueId = ++speechQueueIdRef.current;
+
+    // Bersihkan karakter Arab atau simbol markdown yang tersisa agar suara Indonesia tidak gagap
+    const cleanText = text
+      .replace(/[\u0600-\u06FF]/g, "")
+      .replace(/[*#_`]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (!cleanText) return;
+
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+    utterance.lang = "id-ID";
 
     const voices = window.speechSynthesis.getVoices();
     const idVoice =
@@ -133,57 +138,28 @@ export default function Home() {
           (v.name.toLowerCase().includes("ardi") || v.name.toLowerCase().includes("male"))
       ) || voices.find((v) => v.lang.includes("id-ID") || v.lang.includes("id_ID"));
 
-    const arVoice =
-      voices.find((v) => v.lang.includes("ar-SA") || v.lang.includes("ar_SA")) ||
-      voices.find((v) => v.lang.startsWith("ar"));
+    if (idVoice) {
+      utterance.voice = idVoice;
+    }
 
-    const validSegments = segments.filter((s) => s.text && s.text.trim().length > 0);
-    if (validSegments.length === 0) return;
+    if (isDiscussion) {
+      // Gaya penyampaian kajian asatidzah Indonesia: lebih tuma'ninah, teduh, dan berwibawa
+      utterance.rate = 0.90;
+      utterance.pitch = 0.90;
+    } else {
+      // Gaya asisten harian: lugas dan jelas
+      utterance.rate = 0.98;
+      utterance.pitch = 0.96;
+    }
 
-    let index = 0;
-    setIsSpeaking(true);
+    utterance.onstart = () => setIsSpeaking(true);
+    utterance.onend = () => setIsSpeaking(false);
+    utterance.onerror = () => setIsSpeaking(false);
 
-    const speakNext = () => {
-      if (currentQueueId !== speechQueueIdRef.current || index >= validSegments.length) {
-        if (currentQueueId === speechQueueIdRef.current) {
-          setIsSpeaking(false);
-        }
-        return;
-      }
-
-      const seg = validSegments[index];
-      index++;
-
-      const cleanText =
-        seg.lang === "ar"
-          ? seg.text.trim()
-          : seg.text.replace(/[*#_`]/g, "").trim();
-
-      const utterance = new SpeechSynthesisUtterance(cleanText);
-
-      if (seg.lang === "ar") {
-        utterance.lang = "ar-SA";
-        if (arVoice) utterance.voice = arVoice;
-        utterance.rate = 0.85; // Tempo tartil/jelas untuk lafal Arab berharakat
-        utterance.pitch = 0.95;
-      } else {
-        utterance.lang = "id-ID";
-        if (idVoice) utterance.voice = idVoice;
-        utterance.rate = 0.94; // Tempo tenang & santun untuk Bahasa Indonesia
-        utterance.pitch = 0.95;
-      }
-
-      utterance.onend = () => speakNext();
-      utterance.onerror = () => speakNext();
-
-      window.speechSynthesis.speak(utterance);
-    };
-
-    speakNext();
+    window.speechSynthesis.speak(utterance);
   };
 
   const stopSpeaking = () => {
-    speechQueueIdRef.current++;
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
     }
@@ -237,18 +213,12 @@ export default function Home() {
 
         if (diffMinutes <= 15 && diffMinutes >= -30) {
           playReminderTone();
-          const reminderSegments: SpokenSegment[] = [
-            { lang: "ar", text: "السَّلَامُ عَلَيْكُمْ وَرَحْمَةُ اللَّهِ وَبَرَكَاتُهُ" },
-            {
-              lang: "id",
-              text:
-                diffMinutes > 1
-                  ? `Akhi, ${Math.ceil(diffMinutes)} menit lagi ada jadwal ${item.title}.`
-                  : `Akhi, waktunya sekarang untuk ${item.title}.`,
-            },
-          ];
+          const reminderText =
+            diffMinutes > 1
+              ? `Assalaamu 'alaikum Akhi, ${Math.ceil(diffMinutes)} menit lagi ada jadwal ${item.title}.`
+              : `Assalaamu 'alaikum Akhi, waktunya sekarang untuk ${item.title}.`;
 
-          speakSegments(reminderSegments);
+          speakReply(reminderText, false);
 
           if ("Notification" in window && Notification.permission === "granted") {
             new Notification("Pengingat Jadwal — Asisten Akhi", {
@@ -354,10 +324,7 @@ export default function Home() {
         )
       );
       setCollapsedExpansions((prev) => ({ ...prev, [idea.id]: false }));
-      speakSegments([
-        { lang: "ar", text: "الْحَمْدُ لِلَّهِ" },
-        { lang: "id", text: `Ide ${idea.title} sudah selesai dijabarkan, Akhi.` },
-      ]);
+      speakReply(`Alhamdulillaah, ide ${idea.title} sudah selesai dijabarkan, Akhi.`, false);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -452,7 +419,7 @@ export default function Home() {
   }) => {
     setIsProcessing(true);
     setError("");
-    setStatusLog("Menyimak & menyiapkan dalil...");
+    setStatusLog("Menyimak & menyiapkan jawaban...");
 
     try {
       const res = await fetch("/api/assistant", {
@@ -472,10 +439,7 @@ export default function Home() {
         minute: "2-digit",
       });
 
-      const segmentsToUse: SpokenSegment[] =
-        data.spokenSegments && data.spokenSegments.length > 0
-          ? data.spokenSegments
-          : [{ lang: "id", text: data.replyMessage }];
+      const voiceScript = data.spokenText || data.replyMessage;
 
       const userMsg: ChatMessage = {
         id: `${Date.now()}-u`,
@@ -487,7 +451,7 @@ export default function Home() {
         id: `${Date.now()}-a`,
         role: "assistant",
         text: data.replyMessage,
-        segments: segmentsToUse,
+        spokenText: voiceScript,
         intent: data.intent,
         timestamp: timeStr,
       };
@@ -495,7 +459,7 @@ export default function Home() {
       setChatHistory((prev) => [...prev, userMsg, aiMsg]);
       setStatusLog("Selesai!");
 
-      speakSegments(segmentsToUse);
+      speakReply(voiceScript, data.intent === "general_chat");
 
       if (data.intent === "open_app") {
         handleOpenApp(data.targetApp);
@@ -763,8 +727,9 @@ export default function Home() {
                         <button
                           type="button"
                           onClick={() =>
-                            speakSegments(
-                              msg.segments || [{ lang: "id", text: msg.text }]
+                            speakReply(
+                              msg.spokenText || msg.text,
+                              msg.intent === "general_chat"
                             )
                           }
                           className="text-[11px] text-emerald-400 hover:text-emerald-300 flex items-center gap-1 cursor-pointer"
