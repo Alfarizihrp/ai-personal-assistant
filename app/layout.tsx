@@ -5,22 +5,16 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Akhi - AI Personal Assistant",
-  description: "Asisten suara pribadi berbasis Gemini & Supabase",
+  title: "Alfarizi — AI Personal Assistant",
+  description: "Asisten Pribadi, Diskusi Ilmu & Semantic Memory (RAG)",
+  icons: {
+    icon: "/icon-192.png",
+    shortcut: "/icon-192.png",
+    apple: "/icon-512.png",
+  },
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "Alfarizi AI",
+  },
 };
-
-export const viewport: Viewport = {
-  themeColor: "#020617",
-};
-
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
-  return (
-    <html lang="id">
-      <body className={inter.className}>{children}</body>
-    </html>
-  );
-}
