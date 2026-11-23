@@ -28,7 +28,15 @@ import {
   Delete,
   Pencil,
   X,
+  BrainCircuit,
+  FileText,
 } from "lucide-react";
+
+interface RagSource {
+  title: string;
+  category: string;
+  similarity: number;
+}
 
 interface AssistantResponse {
   transcript: string;
@@ -41,6 +49,7 @@ interface AssistantResponse {
   targetApp?: string;
   replyMessage: string;
   spokenText?: string;
+  sources?: RagSource[];
 }
 
 interface ChatMessage {
@@ -49,6 +58,7 @@ interface ChatMessage {
   text: string;
   spokenText?: string;
   intent?: string;
+  sources?: RagSource[];
   timestamp: string;
 }
 
@@ -66,6 +76,14 @@ interface IdeaItem {
   title: string;
   content: string;
   ai_expansion?: string | null;
+  created_at: string;
+}
+
+interface KnowledgeDocItem {
+  title: string;
+  category: string;
+  preview: string;
+  chunkCount: number;
   created_at: string;
 }
 
@@ -89,7 +107,7 @@ export default function Home() {
   const [statusLog, setStatusLog] = useState("Siap mendengarkan perintahmu, Akhi");
   const [error, setError] = useState("");
 
-  const [activeTab, setActiveTab] = useState<"chat" | "schedules" | "ideas">("chat");
+  const [activeTab, setActiveTab] = useState<"chat" | "schedules" | "ideas" | "rag">("chat");
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
 
   const [savingChatId, setSavingChatId] = useState<string | null>(null);
@@ -97,7 +115,16 @@ export default function Home() {
 
   const [schedules, setSchedules] = useState<ScheduleItem[]>([]);
   const [ideas, setIdeas] = useState<IdeaItem[]>([]);
+  const [knowledgeDocs, setKnowledgeDocs] = useState<KnowledgeDocItem[]>([]);
   const [loadingData, setLoadingData] = useState(true);
+
+  // State Form Input Memori Semantik (RAG)
+  const [showRagForm, setShowRagForm] = useState(false);
+  const [ragTitle, setRagTitle] = useState("");
+  const [ragCategory, setRagCategory] = useState("Catatan Ilmu & Kajian");
+  const [ragContent, setRagContent] = useState("");
+  const [indexingRag, setIndexingRag] = useState(false);
+  const [ragFormError, setRagFormError] = useState("");
 
   // State Edit Jadwal
   const [editingScheduleId, setEditingScheduleId] = useState<number | null>(null);
@@ -124,7 +151,6 @@ export default function Home() {
   const audioChunksRef = useRef<Blob[]>([]);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
-  // Verifikasi HTTP-Only Cookie JWT ke server saat halaman dimuat
   useEffect(() => {
     const checkServerSession = async () => {
       try {
@@ -148,7 +174,6 @@ export default function Home() {
     checkServerSession();
   }, []);
 
-  // Helper penangan respons 401 jika sesi JWT kedaluwarsa di tengah penggunaan
   const handleUnauthorizedResponse = (res: Response) => {
     if (res.status === 401) {
       stopSpeaking();
@@ -220,7 +245,6 @@ export default function Home() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isUnlocked, checkingSession, pinInput, verifyingPin]);
 
-  // Hapus HTTP-Only Cookie di server saat menekan tombol kunci
   const handleLockApp = async () => {
     stopSpeaking();
     try {
@@ -377,19 +401,84 @@ export default function Home() {
   const fetchAllData = async () => {
     setLoadingData(true);
     try {
-      const res = await fetch("/api/workspace");
-      if (handleUnauthorizedResponse(res)) return [];
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Gagal memuat data.");
+      const [wsRes, ragRes] = await Promise.all([
+        fetch("/api/workspace"),
+        fetch("/api/knowledge"),
+      ]);
 
-      setSchedules(data.schedules || []);
-      setIdeas(data.ideas || []);
-      return data.schedules || [];
+      if (handleUnauthorizedResponse(wsRes) || handleUnauthorizedResponse(ragRes)) return [];
+
+      const wsData = await wsRes.json();
+      const ragData = await ragRes.json();
+
+      if (!wsRes.ok) throw new Error(wsData.error || "Gagal memuat workspace.");
+      if (!ragRes.ok) throw new Error(ragData.error || "Gagal memuat memori RAG.");
+
+      setSchedules(wsData.schedules || []);
+      setIdeas(wsData.ideas || []);
+      setKnowledgeDocs(ragData.documents || []);
+      return wsData.schedules || [];
     } catch (err: any) {
       setError(err.message);
       return [];
     } finally {
       setLoadingData(false);
+    }
+  };
+
+  // --- FUNGSI TAMBAH & HAPUS DOKUMEN MEMORI SEMANTIK (RAG) ---
+  const handleRagSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setRagFormError("");
+
+    if (!ragTitle.trim() || !ragContent.trim()) {
+      setRagFormError("Judul dan isi materi dokumen wajib diisi.");
+      return;
+    }
+
+    setIndexingRag(true);
+    try {
+      const res = await fetch("/api/knowledge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: ragTitle.trim(),
+          category: ragCategory,
+          content: ragContent.trim(),
+        }),
+      });
+
+      if (handleUnauthorizedResponse(res)) return;
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Gagal mengindeks dokumen.");
+
+      setRagTitle("");
+      setRagContent("");
+      setShowRagForm(false);
+      await fetchAllData();
+      speakReply(
+        `Alhamdulillaah, catatan ${ragTitle.trim()} berhasil diindeks ke memori semantik sebanyak ${data.chunksSaved} bagian, Akhi.`,
+        false
+      );
+    } catch (err: any) {
+      setRagFormError(err.message);
+    } finally {
+      setIndexingRag(false);
+    }
+  };
+
+  const handleDeleteKnowledgeDoc = async (title: string) => {
+    try {
+      const res = await fetch(
+        `/api/knowledge?title=${encodeURIComponent(title)}`,
+        { method: "DELETE" }
+      );
+      if (handleUnauthorizedResponse(res)) return;
+      if (res.ok) {
+        setKnowledgeDocs((prev) => prev.filter((doc) => doc.title !== title));
+      }
+    } catch (err: any) {
+      setError(`Gagal menghapus dokumen: ${err.message}`);
     }
   };
 
@@ -806,7 +895,7 @@ export default function Home() {
   }) => {
     setIsProcessing(true);
     setError("");
-    setStatusLog("Menyimak & menyiapkan jawaban...");
+    setStatusLog("Menyimak & mencari konteks memori...");
 
     try {
       const res = await fetch("/api/assistant", {
@@ -847,6 +936,7 @@ export default function Home() {
         text: data.replyMessage,
         spokenText: voiceScript,
         intent: data.intent,
+        sources: data.sources || [],
         timestamp: timeStr,
       };
 
@@ -1067,7 +1157,7 @@ export default function Home() {
             AI Personal Assistant
           </h1>
           <p className="text-slate-400 text-xs mb-6">
-            Asisten Pribadi & Diskusi Ilmu untuk Akhi
+            Asisten Pribadi, Diskusi Ilmu & Semantic Memory (RAG)
           </p>
 
           <button
@@ -1111,7 +1201,7 @@ export default function Home() {
               type="text"
               value={textCommand}
               onChange={(e) => setTextCommand(e.target.value)}
-              placeholder="Tanya dalil, catat jadwal, atau ide..."
+              placeholder="Tanya dalil, cari catatan memori, atau jadwal..."
               disabled={isProcessing || isRecording || isBriefingLoading}
               className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500"
             />
@@ -1150,12 +1240,12 @@ export default function Home() {
           )}
         </div>
 
-        {/* Navigasi 3 Tab */}
-        <div className="grid grid-cols-3 gap-1.5 bg-slate-900 p-1.5 rounded-xl border border-slate-800">
+        {/* Navigasi 4 Tab (Diskusi, Jadwal, Workspace, Memori RAG) */}
+        <div className="grid grid-cols-4 gap-1 bg-slate-900 p-1.5 rounded-xl border border-slate-800">
           <button
             type="button"
             onClick={() => setActiveTab("chat")}
-            className={`flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+            className={`flex flex-col sm:flex-row items-center justify-center gap-1 py-2 px-1 rounded-lg text-[11px] font-semibold transition cursor-pointer ${
               activeTab === "chat"
                 ? "bg-emerald-600 text-white shadow"
                 : "text-slate-400 hover:text-slate-200"
@@ -1168,7 +1258,7 @@ export default function Home() {
           <button
             type="button"
             onClick={() => setActiveTab("schedules")}
-            className={`flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+            className={`flex flex-col sm:flex-row items-center justify-center gap-1 py-2 px-1 rounded-lg text-[11px] font-semibold transition cursor-pointer ${
               activeTab === "schedules"
                 ? "bg-blue-600 text-white shadow"
                 : "text-slate-400 hover:text-slate-200"
@@ -1181,18 +1271,31 @@ export default function Home() {
           <button
             type="button"
             onClick={() => setActiveTab("ideas")}
-            className={`flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+            className={`flex flex-col sm:flex-row items-center justify-center gap-1 py-2 px-1 rounded-lg text-[11px] font-semibold transition cursor-pointer ${
               activeTab === "ideas"
                 ? "bg-amber-600 text-white shadow"
                 : "text-slate-400 hover:text-slate-200"
             }`}
           >
             <Lightbulb className="w-3.5 h-3.5" />
-            <span>Workspace ({ideas.length})</span>
+            <span>Ide ({ideas.length})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab("rag")}
+            className={`flex flex-col sm:flex-row items-center justify-center gap-1 py-2 px-1 rounded-lg text-[11px] font-semibold transition cursor-pointer ${
+              activeTab === "rag"
+                ? "bg-purple-600 text-white shadow"
+                : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            <BrainCircuit className="w-3.5 h-3.5" />
+            <span>Memori ({knowledgeDocs.length})</span>
           </button>
         </div>
 
-        {/* Tab 1: Riwayat Diskusi */}
+        {/* Tab 1: Riwayat Diskusi (Dengan Badge Sumber RAG) */}
         {activeTab === "chat" && (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
             <div className="flex items-center justify-between">
@@ -1215,7 +1318,7 @@ export default function Home() {
 
             {chatHistory.length === 0 ? (
               <p className="text-xs text-slate-500 text-center py-6 leading-relaxed">
-                Belum ada diskusi, Akhi. Klik tombol "Briefing Agenda & Faedah Hari Ini" di atas atau ajukan pertanyaan seputar ilmu & adab.
+                Belum ada diskusi, Akhi. Ajukan pertanyaan seputar ilmu, atau tanyakan isi dokumen yang sudah diindeks di tab Memori.
               </p>
             ) : (
               <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
@@ -1292,6 +1395,24 @@ export default function Home() {
                       <p className="text-xs sm:text-sm leading-relaxed whitespace-pre-line">
                         {msg.text}
                       </p>
+
+                      {/* Badge Sumber Memori Semantik (RAG Citations) */}
+                      {msg.role === "assistant" && msg.sources && msg.sources.length > 0 && (
+                        <div className="mt-3 pt-2.5 border-t border-slate-800/80 flex flex-wrap items-center gap-1.5">
+                          <span className="text-[10px] text-purple-400 font-medium flex items-center gap-1">
+                            <BrainCircuit className="w-3 h-3" />
+                            <span>Sumber Memori:</span>
+                          </span>
+                          {msg.sources.map((src, sIdx) => (
+                            <span
+                              key={sIdx}
+                              className="text-[10px] bg-purple-950/60 border border-purple-800/60 text-purple-200 px-2 py-0.5 rounded-md"
+                            >
+                              {src.title} ({src.similarity}%)
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -1652,6 +1773,141 @@ export default function Home() {
                     </div>
                   );
                 })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Tab 4: Semantic Memory & RAG Knowledge Base (pgvector) */}
+        {activeTab === "rag" && (
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-sm font-semibold flex items-center gap-2">
+                  <BrainCircuit className="w-4 h-4 text-purple-400" />
+                  <span>Semantic Memory (pgvector RAG)</span>
+                </h2>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  Indeks dokumen/catatan agar asisten bisa menjawab berdasarkan referensimu
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowRagForm(!showRagForm);
+                  setRagFormError("");
+                }}
+                className="text-xs bg-purple-600 hover:bg-purple-500 text-white px-3 py-1.5 rounded-lg flex items-center gap-1 transition cursor-pointer shrink-0"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Indeks Teks</span>
+              </button>
+            </div>
+
+            {showRagForm && (
+              <form
+                onSubmit={handleRagSubmit}
+                className="bg-slate-950 border border-purple-900/50 rounded-xl p-3.5 space-y-2.5"
+              >
+                <input
+                  type="text"
+                  value={ragTitle}
+                  onChange={(e) => setRagTitle(e.target.value)}
+                  placeholder="Judul dokumen (misal: Ringkasan Kitab Tauhid / Arsitektur Sistem)..."
+                  className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-purple-500"
+                />
+
+                <select
+                  value={ragCategory}
+                  onChange={(e) => setRagCategory(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-purple-500"
+                >
+                  <option value="Catatan Ilmu & Kajian">Catatan Ilmu & Kajian</option>
+                  <option value="Akademik & Skripsi">Akademik & Skripsi</option>
+                  <option value="Dokumentasi Teknis & Proyek">Dokumentasi Teknis & Proyek</option>
+                  <option value="Catatan Pribadi">Catatan Pribadi</option>
+                </select>
+
+                <textarea
+                  rows={5}
+                  value={ragContent}
+                  onChange={(e) => setRagContent(e.target.value)}
+                  placeholder="Tempelkan teks materi, paragraf draf, atau rangkuman panjang di sini. Sistem akan otomatis memecahnya menjadi chunks dan mengubahnya menjadi vektor embedding..."
+                  className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-purple-500"
+                />
+
+                {ragFormError && (
+                  <p className="text-[11px] text-red-400 bg-red-950/50 border border-red-900/60 px-2.5 py-1.5 rounded">
+                    {ragFormError}
+                  </p>
+                )}
+
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowRagForm(false)}
+                    className="text-xs text-slate-400 px-3 py-1.5 cursor-pointer"
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={indexingRag}
+                    className="text-xs bg-purple-600 hover:bg-purple-500 disabled:bg-slate-700 text-white px-3.5 py-1.5 rounded-lg font-medium flex items-center gap-1.5 cursor-pointer"
+                  >
+                    {indexingRag && <Loader2 className="w-3 h-3 animate-spin" />}
+                    <span>{indexingRag ? "Membuat Vektor..." : "Simpan ke Memori Vektor"}</span>
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {loadingData ? (
+              <p className="text-xs text-slate-500 text-center py-4">Memuat memori vektor...</p>
+            ) : knowledgeDocs.length === 0 ? (
+              <p className="text-xs text-slate-500 text-center py-6 leading-relaxed">
+                Belum ada dokumen terindeks. Klik "+ Indeks Teks" untuk menambahkan materi kajian, catatan proyek, atau ringkasan buku agar bisa dicari secara semantik oleh asisten.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {knowledgeDocs.map((doc, dIdx) => (
+                  <div
+                    key={dIdx}
+                    className="bg-slate-950 border border-slate-800/80 rounded-xl p-3.5 space-y-2"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <FileText className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                          <h3 className="text-sm font-semibold text-purple-300">
+                            {doc.title}
+                          </h3>
+                        </div>
+                        <div className="flex items-center gap-2 mt-1">
+                          <span className="text-[10px] px-2 py-0.5 rounded bg-purple-950/60 text-purple-300 border border-purple-900/50">
+                            {doc.category}
+                          </span>
+                          <span className="text-[10px] text-slate-500">
+                            {doc.chunkCount} vector chunks
+                          </span>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteKnowledgeDoc(doc.title)}
+                        className="text-slate-600 hover:text-red-400 p-1 transition cursor-pointer"
+                        title="Hapus dokumen dari memori vektor"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    <p className="text-xs text-slate-400 leading-relaxed">
+                      {doc.preview}
+                    </p>
+                  </div>
+                ))}
               </div>
             )}
           </div>
