@@ -1,36 +1,52 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Akhi — Multimodal AI Personal Assistant & Semantic Memory (RAG)
 
-## Getting Started
+Aplikasi asisten pribadi berbasis web (*Progressive Web App*) yang dirancang untuk memproses perintah suara maupun teks secara multimodal, mengelola jadwal dengan notifikasi latar belakang, menjabarkan ide kerja, serta menjawab pertanyaan berdasarkan basis pengetahuan pribadi menggunakan **Retrieval-Augmented Generation (RAG)**.
 
-First, run the development server:
+---
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+## Fitur Utama
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+1. **Multimodal Voice & Text Command (`Gemini API`)**
+   - Menerima input rekaman suara langsung maupun teks, melakukan transkripsi, klasifikasi *intent* terstruktur (`JSON Schema`), dan menghasilkan balasan layar sekaligus naskah khusus *Text-to-Speech* berbahasa Indonesia.
+2. **Semantic Memory & Document Search (`pgvector` RAG)**
+   - Memecah dokumen/catatan panjang (*overlap chunking*), mengubahnya menjadi vektor 768-dimensi menggunakan `text-embedding-004`, dan melakukan pencocokan kemiripan makna (*Cosine Similarity*) di PostgreSQL Supabase lengkap dengan sitasi sumber dokumen.
+3. **Arsitektur Keamanan Berlapis (*Defense-in-Depth*)**
+   - Autentikasi PIN berbasis **HTTP-Only Signed JWT Cookie (`HS256`)**, proteksi rute API di level **Next.js Edge Middleware**, serta penguncian database menggunakan **Supabase Row Level Security (RLS)** dengan akses eksklusif `service_role` di sisi server.
+4. **Installable PWA & Background Web Push Notification**
+   - Dapat dipasang di layar utama perangkat seluler (*standalone mode*) dengan *Service Worker* kustom dan protokol **VAPID Web Push** yang memicu pengingat jadwal H-15 menit melalui *Serverless Cron Job*.
+5. **Global Cross-Data Search & Productivity Analytics**
+   - Pencarian paralel lintas tabel (`schedules`, `ideas`, dan `knowledge_base`) serta dasbor metrik real-time untuk memantau rasio penyelesaian agenda dan sebaran kategori memori.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+---
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Arsitektur Sistem
 
-## Learn More
+```mermaid
+flowchart TD
+    Client["Client Browser / Mobile PWA<br/>(Next.js App Router + Service Worker)"]
+    Middleware["Next.js Edge Middleware<br/>(Verifikasi HTTP-Only JWT Cookie)"]
+    
+    subgraph API ["Next.js Server Route Handlers"]
+        AuthAPI["/api/verify-pin & /api/session"]
+        AssistantAPI["/api/assistant & /api/daily-briefing"]
+        KnowledgeAPI["/api/knowledge (Chunking & Embedding)"]
+        WorkspaceAPI["/api/workspace & /api/search"]
+        PushCronAPI["/api/push/subscribe & /api/cron/reminders"]
+    end
 
-To learn more about Next.js, take a look at the following resources:
+    subgraph External ["AI & Cloud Infrastructure"]
+        Gemini["Google Gemini API<br/>(Multimodal LLM + text-embedding-004)"]
+        Supabase["Supabase PostgreSQL + pgvector<br/>(RLS Protected + HNSW Vector Index)"]
+        WebPush["Web Push Service (VAPID)"]
+    end
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+    Client -->|Request + Cookie| Middleware
+    Middleware -->|Authorized| API
+    AuthAPI -->|Issue Signed JWT| Client
+    AssistantAPI <-->|Inference & Query Vector| Gemini
+    AssistantAPI <-->|RPC match_knowledge| Supabase
+    KnowledgeAPI -->|Generate 768-d Vector| Gemini
+    KnowledgeAPI -->|Store Chunks & Embeddings| Supabase
+    WorkspaceAPI <-->|CRUD & Parallel Search| Supabase
+    PushCronAPI -->|Trigger H-15m Alert| WebPush
+    WebPush -->|Background Notification| Client
