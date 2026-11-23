@@ -31,6 +31,9 @@ import {
   X,
   BrainCircuit,
   FileText,
+  Search,
+  BarChart3,
+  ArrowUpRight,
 } from "lucide-react";
 
 interface RagSource {
@@ -88,7 +91,12 @@ interface KnowledgeDocItem {
   created_at: string;
 }
 
-// Helper konversi VAPID Base64 URL ke Uint8Array untuk Web Push API
+interface GlobalSearchResult {
+  schedules: { id: number; title: string; schedule_time: string; is_done: boolean }[];
+  ideas: { id: number; title: string; content: string; created_at: string }[];
+  knowledge: { id: number; title: string; category: string; snippet: string }[];
+}
+
 function urlBase64ToUint8Array(base64String: string) {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
   const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
@@ -113,6 +121,11 @@ export default function Home() {
   const [subscribingPush, setSubscribingPush] = useState(false);
   const [testingPush, setTestingPush] = useState(false);
 
+  // State Pencarian Lintas Data (Global Search)
+  const [globalQuery, setGlobalQuery] = useState("");
+  const [searchingGlobal, setSearchingGlobal] = useState(false);
+  const [globalResults, setGlobalResults] = useState<GlobalSearchResult | null>(null);
+
   // State Asisten Utama
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -125,7 +138,9 @@ export default function Home() {
   const [statusLog, setStatusLog] = useState("Siap mendengarkan perintahmu, Akhi");
   const [error, setError] = useState("");
 
-  const [activeTab, setActiveTab] = useState<"chat" | "schedules" | "ideas" | "rag">("chat");
+  const [activeTab, setActiveTab] = useState<
+    "chat" | "schedules" | "ideas" | "rag" | "analytics"
+  >("chat");
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
 
   const [savingChatId, setSavingChatId] = useState<string | null>(null);
@@ -169,7 +184,6 @@ export default function Home() {
   const audioChunksRef = useRef<Blob[]>([]);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
-  // Daftarkan Service Worker PWA secara otomatis
   useEffect(() => {
     if (typeof window !== "undefined" && "serviceWorker" in navigator) {
       navigator.serviceWorker
@@ -217,7 +231,35 @@ export default function Home() {
     return false;
   };
 
-  // Fungsi Subscribe Web Push Notification Latar Belakang
+  // Debounced Pencarian Lintas Data (Schedules, Ideas, Knowledge Base)
+  useEffect(() => {
+    if (!isUnlocked) return;
+    const trimmed = globalQuery.trim();
+
+    if (trimmed.length < 2) {
+      setGlobalResults(null);
+      setSearchingGlobal(false);
+      return;
+    }
+
+    setSearchingGlobal(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/search?q=${encodeURIComponent(trimmed)}`);
+        if (handleUnauthorizedResponse(res)) return;
+        const data = await res.json();
+        if (res.ok) {
+          setGlobalResults(data);
+        }
+      } catch {
+      } finally {
+        setSearchingGlobal(false);
+      }
+    }, 350);
+
+    return () => clearTimeout(timer);
+  }, [globalQuery, isUnlocked]);
+
   const enableBackgroundPush = async () => {
     if (subscribingPush) return;
     setSubscribingPush(true);
@@ -1106,6 +1148,33 @@ export default function Home() {
     }
   };
 
+  // --- KALKULASI METRIK ANALITIK PRODUKTIVITAS ---
+  const totalSchedules = schedules.length;
+  const completedSchedules = schedules.filter((s) => s.is_done).length;
+  const pendingSchedules = totalSchedules - completedSchedules;
+  const scheduleCompletionRate =
+    totalSchedules > 0 ? Math.round((completedSchedules / totalSchedules) * 100) : 0;
+
+  const totalIdeas = ideas.length;
+  const expandedIdeasCount = ideas.filter((i) => Boolean(i.ai_expansion)).length;
+  const ideaExpansionRate =
+    totalIdeas > 0 ? Math.round((expandedIdeasCount / totalIdeas) * 100) : 0;
+
+  const totalRagDocs = knowledgeDocs.length;
+  const totalRagChunks = knowledgeDocs.reduce((acc, doc) => acc + doc.chunkCount, 0);
+
+  const categoryCounts = knowledgeDocs.reduce<Record<string, number>>((acc, doc) => {
+    const cat = doc.category || "Catatan Umum";
+    acc[cat] = (acc[cat] || 0) + 1;
+    return acc;
+  }, {});
+
+  const totalSearchHits = globalResults
+    ? globalResults.schedules.length +
+      globalResults.ideas.length +
+      globalResults.knowledge.length
+    : 0;
+
   if (checkingSession) {
     return (
       <main className="min-h-screen bg-slate-950 flex items-center justify-center">
@@ -1198,7 +1267,130 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center py-8 px-4">
-      <div className="max-w-md w-full space-y-5">
+      <div className="max-w-md w-full space-y-4">
+        {/* Bar Pencarian Lintas Data (Global Search) */}
+        <div className="relative">
+          <div className="flex items-center bg-slate-900 border border-slate-800 focus-within:border-blue-500 rounded-2xl px-3.5 py-2.5 shadow-lg transition">
+            {searchingGlobal ? (
+              <Loader2 className="w-4 h-4 text-blue-400 animate-spin shrink-0 mr-2.5" />
+            ) : (
+              <Search className="w-4 h-4 text-slate-500 shrink-0 mr-2.5" />
+            )}
+            <input
+              type="text"
+              value={globalQuery}
+              onChange={(e) => setGlobalQuery(e.target.value)}
+              placeholder="Cari lintas jadwal, ide, faedah & memori RAG..."
+              className="flex-1 bg-transparent text-xs sm:text-sm text-slate-100 placeholder-slate-500 focus:outline-none"
+            />
+            {globalQuery && (
+              <button
+                type="button"
+                onClick={() => {
+                  setGlobalQuery("");
+                  setGlobalResults(null);
+                }}
+                className="text-slate-500 hover:text-slate-300 p-0.5 cursor-pointer"
+                title="Bersihkan pencarian"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+
+          {/* Dropdown Hasil Pencarian Lintas Data */}
+          {globalResults && globalQuery.trim().length >= 2 && (
+            <div className="mt-2 bg-slate-900 border border-slate-800 rounded-2xl p-3.5 shadow-2xl space-y-3">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                <span className="text-[11px] font-semibold text-slate-300">
+                  Hasil Pencarian Lintas Data ({totalSearchHits})
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setGlobalQuery("");
+                    setGlobalResults(null);
+                  }}
+                  className="text-[11px] text-slate-400 hover:text-slate-200 cursor-pointer"
+                >
+                  Tutup
+                </button>
+              </div>
+
+              {totalSearchHits === 0 ? (
+                <p className="text-xs text-slate-500 text-center py-3">
+                  Tidak ditemukan data yang cocok dengan "{globalQuery}".
+                </p>
+              ) : (
+                <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
+                  {globalResults.schedules.map((s) => (
+                    <button
+                      key={`gs-${s.id}`}
+                      type="button"
+                      onClick={() => {
+                        setActiveTab("schedules");
+                        setGlobalResults(null);
+                      }}
+                      className="w-full text-left bg-slate-950 hover:bg-slate-800/80 border border-slate-800 rounded-xl p-2.5 flex items-center justify-between gap-2 transition cursor-pointer"
+                    >
+                      <div>
+                        <span className="text-[10px] font-semibold text-blue-400 uppercase">
+                          Jadwal
+                        </span>
+                        <p className="text-xs font-medium text-slate-100">{s.title}</p>
+                        <p className="text-[11px] text-slate-400">{s.schedule_time}</p>
+                      </div>
+                      <ArrowUpRight className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                    </button>
+                  ))}
+
+                  {globalResults.ideas.map((i) => (
+                    <button
+                      key={`gi-${i.id}`}
+                      type="button"
+                      onClick={() => {
+                        setActiveTab("ideas");
+                        setGlobalResults(null);
+                      }}
+                      className="w-full text-left bg-slate-950 hover:bg-slate-800/80 border border-slate-800 rounded-xl p-2.5 flex items-center justify-between gap-2 transition cursor-pointer"
+                    >
+                      <div>
+                        <span className="text-[10px] font-semibold text-amber-400 uppercase">
+                          Ide & Faedah
+                        </span>
+                        <p className="text-xs font-medium text-slate-100">{i.title}</p>
+                        <p className="text-[11px] text-slate-400 line-clamp-1">{i.content}</p>
+                      </div>
+                      <ArrowUpRight className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                    </button>
+                  ))}
+
+                  {globalResults.knowledge.map((k) => (
+                    <button
+                      key={`gk-${k.id}`}
+                      type="button"
+                      onClick={() => {
+                        setActiveTab("rag");
+                        setGlobalResults(null);
+                      }}
+                      className="w-full text-left bg-slate-950 hover:bg-slate-800/80 border border-slate-800 rounded-xl p-2.5 flex items-center justify-between gap-2 transition cursor-pointer"
+                    >
+                      <div>
+                        <span className="text-[10px] font-semibold text-purple-400 uppercase">
+                          Memori RAG • {k.category}
+                        </span>
+                        <p className="text-xs font-medium text-slate-100">{k.title}</p>
+                        <p className="text-[11px] text-slate-400 line-clamp-1">{k.snippet}</p>
+                      </div>
+                      <ArrowUpRight className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
         {/* Kartu Utama Asisten */}
         <div className="relative bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col items-center text-center">
           <div className="absolute top-4 left-4">
@@ -1213,7 +1405,6 @@ export default function Home() {
           </div>
 
           <div className="absolute top-4 right-4 flex items-center gap-1.5">
-            {/* Tombol Aktifkan Web Push Latar Belakang */}
             <button
               type="button"
               disabled={subscribingPush}
@@ -1342,12 +1533,12 @@ export default function Home() {
           )}
         </div>
 
-        {/* Navigasi 4 Tab */}
-        <div className="grid grid-cols-4 gap-1 bg-slate-900 p-1.5 rounded-xl border border-slate-800">
+        {/* Navigasi 5 Tab (Diskusi, Jadwal, Ide, Memori RAG, Analitik) */}
+        <div className="grid grid-cols-5 gap-1 bg-slate-900 p-1.5 rounded-xl border border-slate-800">
           <button
             type="button"
             onClick={() => setActiveTab("chat")}
-            className={`flex flex-col sm:flex-row items-center justify-center gap-1 py-2 px-1 rounded-lg text-[11px] font-semibold transition cursor-pointer ${
+            className={`flex flex-col items-center justify-center gap-1 py-2 px-1 rounded-lg text-[10px] font-semibold transition cursor-pointer ${
               activeTab === "chat"
                 ? "bg-emerald-600 text-white shadow"
                 : "text-slate-400 hover:text-slate-200"
@@ -1360,7 +1551,7 @@ export default function Home() {
           <button
             type="button"
             onClick={() => setActiveTab("schedules")}
-            className={`flex flex-col sm:flex-row items-center justify-center gap-1 py-2 px-1 rounded-lg text-[11px] font-semibold transition cursor-pointer ${
+            className={`flex flex-col items-center justify-center gap-1 py-2 px-1 rounded-lg text-[10px] font-semibold transition cursor-pointer ${
               activeTab === "schedules"
                 ? "bg-blue-600 text-white shadow"
                 : "text-slate-400 hover:text-slate-200"
@@ -1373,7 +1564,7 @@ export default function Home() {
           <button
             type="button"
             onClick={() => setActiveTab("ideas")}
-            className={`flex flex-col sm:flex-row items-center justify-center gap-1 py-2 px-1 rounded-lg text-[11px] font-semibold transition cursor-pointer ${
+            className={`flex flex-col items-center justify-center gap-1 py-2 px-1 rounded-lg text-[10px] font-semibold transition cursor-pointer ${
               activeTab === "ideas"
                 ? "bg-amber-600 text-white shadow"
                 : "text-slate-400 hover:text-slate-200"
@@ -1386,7 +1577,7 @@ export default function Home() {
           <button
             type="button"
             onClick={() => setActiveTab("rag")}
-            className={`flex flex-col sm:flex-row items-center justify-center gap-1 py-2 px-1 rounded-lg text-[11px] font-semibold transition cursor-pointer ${
+            className={`flex flex-col items-center justify-center gap-1 py-2 px-1 rounded-lg text-[10px] font-semibold transition cursor-pointer ${
               activeTab === "rag"
                 ? "bg-purple-600 text-white shadow"
                 : "text-slate-400 hover:text-slate-200"
@@ -1394,6 +1585,19 @@ export default function Home() {
           >
             <BrainCircuit className="w-3.5 h-3.5" />
             <span>Memori ({knowledgeDocs.length})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab("analytics")}
+            className={`flex flex-col items-center justify-center gap-1 py-2 px-1 rounded-lg text-[10px] font-semibold transition cursor-pointer ${
+              activeTab === "analytics"
+                ? "bg-cyan-600 text-white shadow"
+                : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            <BarChart3 className="w-3.5 h-3.5" />
+            <span>Analitik</span>
           </button>
         </div>
 
@@ -1523,7 +1727,7 @@ export default function Home() {
           </div>
         )}
 
-        {/* Tab 2: Daftar Jadwal & Pengaturan Background Push */}
+        {/* Tab 2: Daftar Jadwal */}
         {activeTab === "schedules" && (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
             <div className="flex items-center justify-between gap-2">
@@ -2028,6 +2232,143 @@ export default function Home() {
                 ))}
               </div>
             )}
+          </div>
+        )}
+
+        {/* Tab 5: Dashboard Analitik Produktivitas */}
+        {activeTab === "analytics" && (
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-5">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-sm font-semibold flex items-center gap-2">
+                  <BarChart3 className="w-4 h-4 text-cyan-400" />
+                  <span>Analitik Produktivitas & Memori</span>
+                </h2>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  Ringkasan real-time eksekusi agenda, ide, dan indeks vektor
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={fetchAllData}
+                className="text-[11px] text-cyan-400 hover:text-cyan-300 flex items-center gap-1 cursor-pointer"
+                title="Segarkan metrik analitik"
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span>Refresh</span>
+              </button>
+            </div>
+
+            {/* Grid 4 Kartu Metrik Utama */}
+            <div className="grid grid-cols-2 gap-2.5">
+              <div className="bg-slate-950 border border-slate-800/90 rounded-xl p-3.5">
+                <p className="text-[11px] text-slate-400">Penyelesaian Jadwal</p>
+                <p className="text-2xl font-bold text-blue-400 mt-1">
+                  {scheduleCompletionRate}%
+                </p>
+                <p className="text-[10px] text-slate-500 mt-0.5">
+                  {completedSchedules} selesai dari {totalSchedules} agenda
+                </p>
+              </div>
+
+              <div className="bg-slate-950 border border-slate-800/90 rounded-xl p-3.5">
+                <p className="text-[11px] text-slate-400">Ide & Catatan Faedah</p>
+                <p className="text-2xl font-bold text-amber-400 mt-1">{totalIdeas}</p>
+                <p className="text-[10px] text-slate-500 mt-0.5">
+                  {expandedIdeasCount} sudah dijabarkan AI
+                </p>
+              </div>
+
+              <div className="bg-slate-950 border border-slate-800/90 rounded-xl p-3.5">
+                <p className="text-[11px] text-slate-400">Memori Vektor (RAG)</p>
+                <p className="text-2xl font-bold text-purple-400 mt-1">{totalRagChunks}</p>
+                <p className="text-[10px] text-slate-500 mt-0.5">
+                  Tersebar di {totalRagDocs} dokumen
+                </p>
+              </div>
+
+              <div className="bg-slate-950 border border-slate-800/90 rounded-xl p-3.5">
+                <p className="text-[11px] text-slate-400">Status Sistem PWA</p>
+                <p className="text-sm font-bold text-emerald-400 mt-2">
+                  {pushSubscribed ? "Push Aktif" : "Push Siaga"}
+                </p>
+                <p className="text-[10px] text-slate-500 mt-1">
+                  JWT Cookie & RLS Terkunci
+                </p>
+              </div>
+            </div>
+
+            {/* Progress Bars Produktivitas */}
+            <div className="bg-slate-950 border border-slate-800/90 rounded-xl p-4 space-y-4">
+              <div>
+                <div className="flex justify-between text-xs mb-1.5">
+                  <span className="text-slate-300 font-medium">Rasio Agenda Tuntas</span>
+                  <span className="text-blue-400 font-semibold">
+                    {completedSchedules}/{totalSchedules} ({scheduleCompletionRate}%)
+                  </span>
+                </div>
+                <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-blue-500 rounded-full transition-all duration-500"
+                    style={{ width: `${scheduleCompletionRate}%` }}
+                  />
+                </div>
+                {pendingSchedules > 0 && (
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    Masih ada {pendingSchedules} agenda aktif yang menunggu diselesaikan.
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <div className="flex justify-between text-xs mb-1.5">
+                  <span className="text-slate-300 font-medium">Rasio Ekspansi Ide AI</span>
+                  <span className="text-amber-400 font-semibold">
+                    {expandedIdeasCount}/{totalIdeas} ({ideaExpansionRate}%)
+                  </span>
+                </div>
+                <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-amber-500 rounded-full transition-all duration-500"
+                    style={{ width: `${ideaExpansionRate}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Distribusi Kategori Semantic Memory */}
+            <div className="bg-slate-950 border border-slate-800/90 rounded-xl p-4 space-y-2.5">
+              <h3 className="text-xs font-semibold text-purple-300">
+                Sebaran Kategori Knowledge Base
+              </h3>
+              {Object.keys(categoryCounts).length === 0 ? (
+                <p className="text-[11px] text-slate-500">
+                  Belum ada dokumen yang diindeks di tab Memori.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {Object.entries(categoryCounts).map(([cat, count]) => {
+                    const pct = Math.round((count / totalRagDocs) * 100);
+                    return (
+                      <div key={cat} className="space-y-1">
+                        <div className="flex justify-between text-[11px]">
+                          <span className="text-slate-300">{cat}</span>
+                          <span className="text-purple-400">
+                            {count} dok ({pct}%)
+                          </span>
+                        </div>
+                        <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-purple-500 rounded-full"
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
         )}
 
