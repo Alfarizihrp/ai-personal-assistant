@@ -15,6 +15,7 @@ import {
   VolumeX,
   Lightbulb,
   Bell,
+  BellRing,
   Plus,
   Sparkles,
   ChevronDown,
@@ -87,6 +88,18 @@ interface KnowledgeDocItem {
   created_at: string;
 }
 
+// Helper konversi VAPID Base64 URL ke Uint8Array untuk Web Push API
+function urlBase64ToUint8Array(base64String: string) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
 export default function Home() {
   // State Keamanan HTTP-Only Cookie / JWT Session
   const [isUnlocked, setIsUnlocked] = useState(false);
@@ -94,6 +107,11 @@ export default function Home() {
   const [pinInput, setPinInput] = useState("");
   const [pinError, setPinError] = useState("");
   const [verifyingPin, setVerifyingPin] = useState(false);
+
+  // State PWA & Background Push Notification
+  const [pushSubscribed, setPushSubscribed] = useState(false);
+  const [subscribingPush, setSubscribingPush] = useState(false);
+  const [testingPush, setTestingPush] = useState(false);
 
   // State Asisten Utama
   const [isRecording, setIsRecording] = useState(false);
@@ -151,6 +169,21 @@ export default function Home() {
   const audioChunksRef = useRef<Blob[]>([]);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
+  // Daftarkan Service Worker PWA secara otomatis
+  useEffect(() => {
+    if (typeof window !== "undefined" && "serviceWorker" in navigator) {
+      navigator.serviceWorker
+        .register("/sw.js")
+        .then(async (reg) => {
+          const existingSub = await reg.pushManager.getSubscription();
+          if (existingSub) {
+            setPushSubscribed(true);
+          }
+        })
+        .catch((err) => console.warn("Service Worker registration skipped:", err));
+    }
+  }, []);
+
   useEffect(() => {
     const checkServerSession = async () => {
       try {
@@ -182,6 +215,70 @@ export default function Home() {
       return true;
     }
     return false;
+  };
+
+  // Fungsi Subscribe Web Push Notification Latar Belakang
+  const enableBackgroundPush = async () => {
+    if (subscribingPush) return;
+    setSubscribingPush(true);
+    setError("");
+
+    try {
+      if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) {
+        throw new Error("Browser ini belum mendukung Web Push Notification.");
+      }
+
+      const perm = await Notification.requestPermission();
+      setNotifPermission(perm);
+      if (perm !== "granted") {
+        throw new Error("Izin notifikasi ditolak di pengaturan browser.");
+      }
+
+      const vapidPublicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+      if (!vapidPublicKey) {
+        throw new Error("NEXT_PUBLIC_VAPID_PUBLIC_KEY belum terpasang.");
+      }
+
+      const reg = await navigator.serviceWorker.ready;
+      const subscription = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
+      });
+
+      const res = await fetch("/api/push/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(subscription.toJSON()),
+      });
+
+      if (handleUnauthorizedResponse(res)) return;
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Gagal menyimpan langganan push.");
+
+      setPushSubscribed(true);
+      speakReply("Alhamdulillaah, notifikasi latar belakang sudah aktif di perangkat ini, Akhi.", false);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSubscribingPush(false);
+    }
+  };
+
+  const handleTestBackgroundPush = async () => {
+    if (testingPush) return;
+    setTestingPush(true);
+    setError("");
+
+    try {
+      const res = await fetch("/api/push/subscribe", { method: "PUT" });
+      if (handleUnauthorizedResponse(res)) return;
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Gagal mengirim notifikasi uji coba.");
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setTestingPush(false);
+    }
   };
 
   const verifyPinCode = async (codeToVerify: string) => {
@@ -329,13 +426,6 @@ export default function Home() {
     } catch {}
   };
 
-  const requestNotificationPermission = async () => {
-    if (typeof window !== "undefined" && "Notification" in window) {
-      const perm = await Notification.requestPermission();
-      setNotifPermission(perm);
-    }
-  };
-
   useEffect(() => {
     if (!isUnlocked) return;
 
@@ -426,7 +516,6 @@ export default function Home() {
     }
   };
 
-  // --- FUNGSI TAMBAH & HAPUS DOKUMEN MEMORI SEMANTIK (RAG) ---
   const handleRagSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setRagFormError("");
@@ -482,7 +571,6 @@ export default function Home() {
     }
   };
 
-  // --- FUNGSI EDIT JADWAL ---
   const startEditingSchedule = (item: ScheduleItem) => {
     setEditingScheduleId(item.id);
     setEditScheduleTitle(item.title);
@@ -534,7 +622,6 @@ export default function Home() {
     }
   };
 
-  // --- FUNGSI EDIT CATATAN IDE / FAEDAH ---
   const startEditingIdea = (idea: IdeaItem) => {
     setEditingIdeaId(idea.id);
     setEditIdeaTitle(idea.title);
@@ -1126,16 +1213,31 @@ export default function Home() {
           </div>
 
           <div className="absolute top-4 right-4 flex items-center gap-1.5">
-            {notifPermission !== "granted" && (
-              <button
-                type="button"
-                onClick={requestNotificationPermission}
-                title="Aktifkan Notifikasi Pengingat"
-                className="p-2 rounded-xl border bg-amber-950/40 border-amber-800/60 text-amber-400 hover:bg-amber-900/50 transition cursor-pointer"
-              >
+            {/* Tombol Aktifkan Web Push Latar Belakang */}
+            <button
+              type="button"
+              disabled={subscribingPush}
+              onClick={enableBackgroundPush}
+              title={
+                pushSubscribed
+                  ? "Web Push Latar Belakang Aktif"
+                  : "Aktifkan Web Push Latar Belakang"
+              }
+              className={`p-2 rounded-xl border transition cursor-pointer ${
+                pushSubscribed
+                  ? "bg-emerald-950/50 border-emerald-800/60 text-emerald-400"
+                  : "bg-amber-950/40 border-amber-800/60 text-amber-400 hover:bg-amber-900/50"
+              }`}
+            >
+              {subscribingPush ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : pushSubscribed ? (
+                <BellRing className="w-4 h-4" />
+              ) : (
                 <Bell className="w-4 h-4" />
-              </button>
-            )}
+              )}
+            </button>
+
             <button
               type="button"
               onClick={() => {
@@ -1240,7 +1342,7 @@ export default function Home() {
           )}
         </div>
 
-        {/* Navigasi 4 Tab (Diskusi, Jadwal, Workspace, Memori RAG) */}
+        {/* Navigasi 4 Tab */}
         <div className="grid grid-cols-4 gap-1 bg-slate-900 p-1.5 rounded-xl border border-slate-800">
           <button
             type="button"
@@ -1295,7 +1397,7 @@ export default function Home() {
           </button>
         </div>
 
-        {/* Tab 1: Riwayat Diskusi (Dengan Badge Sumber RAG) */}
+        {/* Tab 1: Riwayat Diskusi */}
         {activeTab === "chat" && (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
             <div className="flex items-center justify-between">
@@ -1396,7 +1498,6 @@ export default function Home() {
                         {msg.text}
                       </p>
 
-                      {/* Badge Sumber Memori Semantik (RAG Citations) */}
                       {msg.role === "assistant" && msg.sources && msg.sources.length > 0 && (
                         <div className="mt-3 pt-2.5 border-t border-slate-800/80 flex flex-wrap items-center gap-1.5">
                           <span className="text-[10px] text-purple-400 font-medium flex items-center gap-1">
@@ -1422,21 +1523,38 @@ export default function Home() {
           </div>
         )}
 
-        {/* Tab 2: Daftar Jadwal */}
+        {/* Tab 2: Daftar Jadwal & Pengaturan Background Push */}
         {activeTab === "schedules" && (
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
-            <div className="flex items-center justify-between mb-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+            <div className="flex items-center justify-between gap-2">
               <h2 className="text-sm font-semibold flex items-center gap-2">
                 <Bell className="w-4 h-4 text-blue-400" />
-                <span>Agenda & Pengingat Otomatis</span>
+                <span>Agenda & Pengingat</span>
               </h2>
-              {notifPermission !== "granted" && (
+
+              {pushSubscribed ? (
                 <button
                   type="button"
-                  onClick={requestNotificationPermission}
-                  className="text-[11px] text-amber-400 underline cursor-pointer"
+                  disabled={testingPush}
+                  onClick={handleTestBackgroundPush}
+                  className="text-[11px] bg-emerald-950/70 hover:bg-emerald-900/70 border border-emerald-800/60 text-emerald-300 px-2.5 py-1 rounded-lg flex items-center gap-1 cursor-pointer"
                 >
-                  Izinkan Notifikasi
+                  {testingPush ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <BellRing className="w-3 h-3" />
+                  )}
+                  <span>{testingPush ? "Mengirim..." : "Test Push HP"}</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={subscribingPush}
+                  onClick={enableBackgroundPush}
+                  className="text-[11px] bg-amber-950/70 hover:bg-amber-900/70 border border-amber-800/60 text-amber-300 px-2.5 py-1 rounded-lg flex items-center gap-1 cursor-pointer"
+                >
+                  <Bell className="w-3 h-3" />
+                  <span>Aktifkan Push Latar Belakang</span>
                 </button>
               )}
             </div>
@@ -1778,7 +1896,7 @@ export default function Home() {
           </div>
         )}
 
-        {/* Tab 4: Semantic Memory & RAG Knowledge Base (pgvector) */}
+        {/* Tab 4: Semantic Memory & RAG Knowledge Base */}
         {activeTab === "rag" && (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
             <div className="flex items-center justify-between">

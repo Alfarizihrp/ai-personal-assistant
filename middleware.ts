@@ -7,8 +7,12 @@ export async function middleware(req: NextRequest) {
 
   // Lindungi semua endpoint API privat
   if (pathname.startsWith("/api/")) {
-    // Endpoint login PIN & pengecekan status sesi diperbolehkan lewat
-    if (pathname === "/api/verify-pin" || pathname === "/api/session") {
+    // Endpoint login PIN, pengecekan status sesi, dan cron latar belakang diperbolehkan lewat
+    if (
+      pathname === "/api/verify-pin" ||
+      pathname === "/api/session" ||
+      pathname === "/api/cron/reminders"
+    ) {
       return NextResponse.next();
     }
 
