@@ -1,49 +1,75 @@
 import { NextResponse } from "next/server";
-import { createSessionToken, SESSION_COOKIE_NAME } from "@/lib/auth";
+import { createSessionToken } from "@/lib/auth";
 
 export async function POST(req: Request) {
   try {
-    const { pin } = await req.json();
+    const body = await req.json();
+
+    // Mode Demo Tamu (Recruiter Sandbox) tanpa membuka data asli
+    if (body?.mode === "guest") {
+      const guestToken = await createSessionToken("guest");
+      const response = NextResponse.json({
+        success: true,
+        role: "guest",
+        message: "Sesi Demo Recruiter aktif selama 30 menit.",
+      });
+
+      response.cookies.set("akhi_session", guestToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "strict",
+        path: "/",
+        maxAge: 60 * 30, // 30 menit
+      });
+
+      return response;
+    }
+
+    // Mode Pemilik (Owner) dengan PIN 6 digit
+    const { pin } = body;
     const validPin = process.env.APP_ACCESS_PIN;
 
     if (!validPin) {
       return NextResponse.json(
-        { error: "APP_ACCESS_PIN belum dikonfigurasi di server." },
+        { error: "Konfigurasi APP_ACCESS_PIN belum diatur di server." },
         { status: 500 }
       );
     }
 
-    if (String(pin).trim() !== String(validPin).trim()) {
+    if (!pin || String(pin).trim() !== String(validPin).trim()) {
       return NextResponse.json(
-        { error: "PIN yang dimasukkan salah, Akhi." },
+        { error: "Kode PIN tidak valid." },
         { status: 401 }
       );
     }
 
-    const token = await createSessionToken();
-    const response = NextResponse.json({ success: true });
+    const token = await createSessionToken("owner");
+    const response = NextResponse.json({
+      success: true,
+      role: "owner",
+      message: "Autentikasi berhasil.",
+    });
 
-    response.cookies.set(SESSION_COOKIE_NAME, token, {
-      httpOnly: true, // Tidak bisa diakses JavaScript browser (anti-XSS)
-      secure: process.env.NODE_ENV === "production", // Wajib HTTPS di Vercel
-      sameSite: "strict", // Perlindungan penuh terhadap serangan CSRF
+    response.cookies.set("akhi_session", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "strict",
       path: "/",
-      maxAge: 60 * 60 * 24, // 24 jam
+      maxAge: 60 * 60 * 24 * 7,
     });
 
     return response;
-  } catch {
+  } catch (err: any) {
     return NextResponse.json(
-      { error: "Terjadi kesalahan saat memverifikasi PIN." },
-      { status: 400 }
+      { error: err.message || "Gagal memverifikasi akses." },
+      { status: 500 }
     );
   }
 }
 
-// Endpoint untuk mengunci / menghapus HTTP-Only Cookie saat tombol gembok ditekan
 export async function DELETE() {
   const response = NextResponse.json({ success: true });
-  response.cookies.set(SESSION_COOKIE_NAME, "", {
+  response.cookies.set("akhi_session", "", {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "strict",

@@ -2,11 +2,18 @@ import { NextResponse } from "next/server";
 import { GoogleGenAI, Type } from "@google/genai";
 import { supabaseAdmin } from "@/lib/supabase-server";
 import { generateEmbedding } from "@/lib/rag";
+import { cookies } from "next/headers";
+import { verifySessionToken } from "@/lib/auth";
+import { GUEST_KNOWLEDGE_DOCS } from "@/lib/guest-sandbox";
 
 const ai = new GoogleGenAI({});
 
 export async function POST(req: Request) {
   try {
+    const cookieStore = await cookies();
+    const sessionToken = cookieStore.get("akhi_session")?.value;
+    const sessionInfo = sessionToken ? await verifySessionToken(sessionToken) : null;
+    const isGuest = sessionInfo?.role === "guest";
     const body = await req.json();
     const { audioBase64, mimeType, textInput, chatHistory } = body;
 

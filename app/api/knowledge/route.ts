@@ -1,38 +1,63 @@
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
+import { verifySessionToken } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase-server";
 import { chunkText, generateEmbedding } from "@/lib/rag";
+import { GUEST_KNOWLEDGE_DOCS } from "@/lib/guest-sandbox";
+
+async function isGuestSession(): Promise<boolean> {
+  const cookieStore = await cookies();
+  const token = cookieStore.get("akhi_session")?.value;
+  if (!token) return false;
+  const session = await verifySessionToken(token);
+  return session?.role === "guest";
+}
 
 export async function GET() {
   try {
+    if (await isGuestSession()) {
+      return NextResponse.json({
+        documents: GUEST_KNOWLEDGE_DOCS,
+        sandbox: true,
+      });
+    }
+
     const { data, error } = await supabaseAdmin
       .from("knowledge_base")
       .select("id, title, category, content, created_at")
-      .order("created_at", { ascending: false });
+      .order("id", { ascending: false });
 
     if (error) throw new Error(error.message);
 
-    // Kelompokkan potongan (chunks) berdasarkan judul agar rapi ditampilkan di UI
-    const groupedMap = new Map<
+    const grouped = new Map<
       string,
-      { title: string; category: string; preview: string; chunkCount: number; created_at: string }
+      {
+        title: string;
+        category: string;
+        preview: string;
+        chunkCount: number;
+        created_at: string;
+      }
     >();
 
     for (const row of data || []) {
-      const existing = groupedMap.get(row.title);
-      if (!existing) {
-        groupedMap.set(row.title, {
+      const existing = grouped.get(row.title);
+      if (existing) {
+        existing.chunkCount += 1;
+      } else {
+        grouped.set(row.title, {
           title: row.title,
           category: row.category || "Catatan Umum",
           preview: row.content.slice(0, 180) + (row.content.length > 180 ? "..." : ""),
           chunkCount: 1,
           created_at: row.created_at,
         });
-      } else {
-        existing.chunkCount += 1;
       }
     }
 
-    return NextResponse.json({ documents: Array.from(groupedMap.values()) });
+    return NextResponse.json({
+      documents: Array.from(grouped.values()),
+    });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
@@ -49,19 +74,25 @@ export async function POST(req: Request) {
       );
     }
 
-    const cleanTitle = title.trim();
-    const cleanCategory = category?.trim() || "Catatan Umum";
-    const chunks = chunkText(content.trim());
+    // Jika sedang dalam Mode Demo Tamu, kembalikan simulasi sukses tanpa menyentuh database
+    if (await isGuestSession()) {
+      const simulatedChunks = chunkText(content.trim(), 500, 80);
+      return NextResponse.json({
+        success: true,
+        chunksSaved: simulatedChunks.length,
+        sandbox: true,
+      });
+    }
 
+    const chunks = chunkText(content.trim(), 500, 80);
     const rowsToInsert = [];
-    for (let i = 0; i < chunks.length; i++) {
-      const textToEmbed = `Judul: ${cleanTitle} (${cleanCategory})\n${chunks[i]}`;
-      const embedding = await generateEmbedding(textToEmbed);
 
+    for (const chunk of chunks) {
+      const embedding = await generateEmbedding(chunk);
       rowsToInsert.push({
-        title: cleanTitle,
-        category: cleanCategory,
-        content: chunks[i],
+        title: title.trim(),
+        category: category?.trim() || "Catatan Umum",
+        content: chunk,
         embedding,
       });
     }
@@ -80,6 +111,10 @@ export async function POST(req: Request) {
 
 export async function DELETE(req: Request) {
   try {
+    if (await isGuestSession()) {
+      return NextResponse.json({ success: true, sandbox: true });
+    }
+
     const { searchParams } = new URL(req.url);
     const title = searchParams.get("title");
 

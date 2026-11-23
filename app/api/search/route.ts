@@ -1,5 +1,20 @@
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
+import { verifySessionToken } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase-server";
+import {
+  GUEST_SCHEDULES,
+  GUEST_IDEAS,
+  GUEST_KNOWLEDGE_DOCS,
+} from "@/lib/guest-sandbox";
+
+async function isGuestSession(): Promise<boolean> {
+  const cookieStore = await cookies();
+  const token = cookieStore.get("akhi_session")?.value;
+  if (!token) return false;
+  const session = await verifySessionToken(token);
+  return session?.role === "guest";
+}
 
 export async function GET(req: Request) {
   try {
@@ -12,6 +27,47 @@ export async function GET(req: Request) {
         ideas: [],
         knowledge: [],
       });
+    }
+
+    // Jika mode tamu, saring langsung dari dataset simulasi
+    if (await isGuestSession()) {
+      const qLower = query.toLowerCase();
+
+      const schedules = GUEST_SCHEDULES.filter(
+        (s) =>
+          s.title.toLowerCase().includes(qLower) ||
+          s.schedule_time.toLowerCase().includes(qLower)
+      ).map(({ id, title, schedule_time, is_done }) => ({
+        id,
+        title,
+        schedule_time,
+        is_done,
+      }));
+
+      const ideas = GUEST_IDEAS.filter(
+        (i) =>
+          i.title.toLowerCase().includes(qLower) ||
+          i.content.toLowerCase().includes(qLower)
+      ).map(({ id, title, content, created_at }) => ({
+        id,
+        title,
+        content,
+        created_at,
+      }));
+
+      const knowledge = GUEST_KNOWLEDGE_DOCS.filter(
+        (k) =>
+          k.title.toLowerCase().includes(qLower) ||
+          k.category.toLowerCase().includes(qLower) ||
+          k.preview.toLowerCase().includes(qLower)
+      ).map((k, idx) => ({
+        id: 700 + idx,
+        title: k.title,
+        category: k.category,
+        snippet: k.preview.slice(0, 140) + "...",
+      }));
+
+      return NextResponse.json({ schedules, ideas, knowledge });
     }
 
     const pattern = `%${query}%`;
@@ -38,7 +94,6 @@ export async function GET(req: Request) {
     if (ideasRes.error) throw new Error(ideasRes.error.message);
     if (kbRes.error) throw new Error(kbRes.error.message);
 
-    // Deduplikasi dokumen memori berdasarkan judul agar tidak tampil berulang per chunk
     const uniqueKbMap = new Map<
       string,
       { id: number; title: string; category: string; snippet: string }

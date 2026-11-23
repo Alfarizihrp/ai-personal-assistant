@@ -115,6 +115,8 @@ export default function Home() {
   const [pinInput, setPinInput] = useState("");
   const [pinError, setPinError] = useState("");
   const [verifyingPin, setVerifyingPin] = useState(false);
+  const [sessionRole, setSessionRole] = useState<"owner" | "guest" | null>(null);
+  const [enteringDemo, setEnteringDemo] = useState(false);
 
   // State PWA & Background Push Notification
   const [pushSubscribed, setPushSubscribed] = useState(false);
@@ -204,6 +206,7 @@ export default function Home() {
         const res = await fetch("/api/session", { method: "GET" });
         const data = await res.json();
         setIsUnlocked(Boolean(data.authenticated));
+        setSessionRole(data.role || null);
       } catch {
         setIsUnlocked(false);
       } finally {
@@ -349,6 +352,30 @@ export default function Home() {
       setPinInput("");
     } finally {
       setVerifyingPin(false);
+    }
+  };
+
+  const handleEnterGuestDemo = async () => {
+    if (enteringDemo || verifyingPin) return;
+    setEnteringDemo(true);
+    setPinError("");
+
+    try {
+      const res = await fetch("/api/verify-pin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "guest" }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Gagal memulai mode demo.");
+
+      setSessionRole("guest");
+      setIsUnlocked(true);
+    } catch (err: any) {
+      setPinError(err.message);
+    } finally {
+      setEnteringDemo(false);
     }
   };
 
@@ -1254,6 +1281,26 @@ export default function Home() {
               title="Hapus digit"
             >
               <Delete className="w-5 h-5" />
+            </button>
+          </div>
+          <div className="w-full mt-5 pt-4 border-t border-slate-800/80">
+            <button
+              type="button"
+              disabled={enteringDemo || verifyingPin}
+              onClick={handleEnterGuestDemo}
+              className="w-full py-2.5 px-3 rounded-xl bg-blue-950/60 hover:bg-blue-900/70 border border-blue-800/60 text-blue-300 text-xs font-medium flex items-center justify-center gap-2 transition cursor-pointer disabled:opacity-50"
+            >
+              {enteringDemo ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Menyiapkan Sandbox Demo...</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Mode Demo Tamu (Recruiter Sandbox)</span>
+                </>
+              )}
             </button>
           </div>
 
@@ -2369,6 +2416,20 @@ export default function Home() {
                 </div>
               )}
             </div>
+          </div>
+        )}
+        {sessionRole === "guest" && (
+          <div className="bg-amber-950/60 border border-amber-800/60 text-amber-200 text-[11px] px-3.5 py-2 rounded-xl flex items-center justify-between">
+            <span>
+              <strong>Mode Demo Recruiter:</strong> Data simulasi aktif (database pemilik terlindungi).
+            </span>
+            <button
+              type="button"
+              onClick={handleLockApp}
+              className="underline font-semibold hover:text-white ml-2 cursor-pointer"
+            >
+              Keluar
+            </button>
           </div>
         )}
 
