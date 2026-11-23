@@ -29,7 +29,6 @@ import {
   Pencil,
   X,
 } from "lucide-react";
-import { supabase } from "@/lib/supabase";
 
 interface AssistantResponse {
   transcript: string;
@@ -71,7 +70,7 @@ interface IdeaItem {
 }
 
 export default function Home() {
-  // State Keamanan PIN Lock
+  // State Keamanan HTTP-Only Cookie / JWT Session
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [checkingSession, setCheckingSession] = useState(true);
   const [pinInput, setPinInput] = useState("");
@@ -125,19 +124,40 @@ export default function Home() {
   const audioChunksRef = useRef<Blob[]>([]);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
+  // Verifikasi HTTP-Only Cookie JWT ke server saat halaman dimuat
   useEffect(() => {
-    try {
-      const unlockedSession = sessionStorage.getItem("akhi_assistant_unlocked");
-      if (unlockedSession === "true") {
-        setIsUnlocked(true);
+    const checkServerSession = async () => {
+      try {
+        const res = await fetch("/api/session", { method: "GET" });
+        const data = await res.json();
+        setIsUnlocked(Boolean(data.authenticated));
+      } catch {
+        setIsUnlocked(false);
+      } finally {
+        setCheckingSession(false);
       }
+    };
+
+    try {
       const savedChat = localStorage.getItem("akhi_chat_history");
       if (savedChat) {
         setChatHistory(JSON.parse(savedChat));
       }
     } catch {}
-    setCheckingSession(false);
+
+    checkServerSession();
   }, []);
+
+  // Helper penangan respons 401 jika sesi JWT kedaluwarsa di tengah penggunaan
+  const handleUnauthorizedResponse = (res: Response) => {
+    if (res.status === 401) {
+      stopSpeaking();
+      setIsUnlocked(false);
+      setPinError("Sesi kedaluwarsa. Silakan masukkan PIN kembali.");
+      return true;
+    }
+    return false;
+  };
 
   const verifyPinCode = async (codeToVerify: string) => {
     if (verifyingPin || codeToVerify.length < 6) return;
@@ -158,7 +178,6 @@ export default function Home() {
         return;
       }
 
-      sessionStorage.setItem("akhi_assistant_unlocked", "true");
       setIsUnlocked(true);
       setPinInput("");
     } catch {
@@ -201,9 +220,12 @@ export default function Home() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isUnlocked, checkingSession, pinInput, verifyingPin]);
 
-  const handleLockApp = () => {
+  // Hapus HTTP-Only Cookie di server saat menekan tombol kunci
+  const handleLockApp = async () => {
     stopSpeaking();
-    sessionStorage.removeItem("akhi_assistant_unlocked");
+    try {
+      await fetch("/api/verify-pin", { method: "DELETE" });
+    } catch {}
     setIsUnlocked(false);
     setPinInput("");
     setPinError("");
@@ -332,10 +354,15 @@ export default function Home() {
             });
           }
 
-          await supabase
-            .from("schedules")
-            .update({ reminded: true })
-            .eq("id", item.id);
+          await fetch("/api/workspace", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              resource: "schedules",
+              id: item.id,
+              updates: { reminded: true },
+            }),
+          });
 
           setSchedules((prev) =>
             prev.map((s) => (s.id === item.id ? { ...s, reminded: true } : s))
@@ -349,15 +376,21 @@ export default function Home() {
 
   const fetchAllData = async () => {
     setLoadingData(true);
-    const [schedRes, ideaRes] = await Promise.all([
-      supabase.from("schedules").select("*").order("created_at", { ascending: false }),
-      supabase.from("ideas").select("*").order("created_at", { ascending: false }),
-    ]);
+    try {
+      const res = await fetch("/api/workspace");
+      if (handleUnauthorizedResponse(res)) return [];
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Gagal memuat data.");
 
-    if (!schedRes.error && schedRes.data) setSchedules(schedRes.data);
-    if (!ideaRes.error && ideaRes.data) setIdeas(ideaRes.data);
-    setLoadingData(false);
-    return schedRes.data || [];
+      setSchedules(data.schedules || []);
+      setIdeas(data.ideas || []);
+      return data.schedules || [];
+    } catch (err: any) {
+      setError(err.message);
+      return [];
+    } finally {
+      setLoadingData(false);
+    }
   };
 
   // --- FUNGSI EDIT JADWAL ---
@@ -383,15 +416,19 @@ export default function Home() {
       const updatedTitle = editScheduleTitle.trim();
       const updatedTime = editScheduleTime.trim() || "Waktu belum ditentukan";
 
-      const { error: dbErr } = await supabase
-        .from("schedules")
-        .update({
-          title: updatedTitle,
-          schedule_time: updatedTime,
-        })
-        .eq("id", id);
+      const res = await fetch("/api/workspace", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resource: "schedules",
+          id,
+          updates: { title: updatedTitle, schedule_time: updatedTime },
+        }),
+      });
 
-      if (dbErr) throw new Error(dbErr.message);
+      if (handleUnauthorizedResponse(res)) return;
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
 
       setSchedules((prev) =>
         prev.map((item) =>
@@ -431,15 +468,19 @@ export default function Home() {
       const updatedTitle = editIdeaTitle.trim() || "Catatan Ide";
       const updatedContent = editIdeaContent.trim();
 
-      const { error: dbErr } = await supabase
-        .from("ideas")
-        .update({
-          title: updatedTitle,
-          content: updatedContent,
-        })
-        .eq("id", id);
+      const res = await fetch("/api/workspace", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resource: "ideas",
+          id,
+          updates: { title: updatedTitle, content: updatedContent },
+        }),
+      });
 
-      if (dbErr) throw new Error(dbErr.message);
+      if (handleUnauthorizedResponse(res)) return;
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
 
       setIdeas((prev) =>
         prev.map((item) =>
@@ -473,14 +514,21 @@ export default function Home() {
       const labelPrefix =
         msg.intent === "daily_briefing" ? "[Briefing & Faedah]" : "[Faedah Ilmu]";
 
-      const { error: dbErr } = await supabase.from("ideas").insert([
-        {
-          title: `${labelPrefix} ${shortQuestion}`,
-          content: msg.text,
-        },
-      ]);
+      const res = await fetch("/api/workspace", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resource: "ideas",
+          payload: {
+            title: `${labelPrefix} ${shortQuestion}`,
+            content: msg.text,
+          },
+        }),
+      });
 
-      if (dbErr) throw new Error(dbErr.message);
+      if (handleUnauthorizedResponse(res)) return;
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
 
       await fetchAllData();
       setSavedChatIds((prev) => ({ ...prev, [msg.id]: true }));
@@ -508,6 +556,7 @@ export default function Home() {
         body: JSON.stringify({ schedules: latestSchedules }),
       });
 
+      if (handleUnauthorizedResponse(res)) return;
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Gagal memuat Daily Briefing.");
 
@@ -546,38 +595,56 @@ export default function Home() {
 
   const saveScheduleToDb = async (title?: string, time?: string, isoDateTime?: string) => {
     if (!title) return;
-    const { error } = await supabase.from("schedules").insert([
-      {
-        title,
-        schedule_time: time || "Waktu belum ditentukan",
-        target_datetime: isoDateTime || null,
-        reminded: false,
-      },
-    ]);
+    try {
+      const res = await fetch("/api/workspace", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resource: "schedules",
+          payload: {
+            title,
+            schedule_time: time || "Waktu belum ditentukan",
+            target_datetime: isoDateTime || null,
+            reminded: false,
+          },
+        }),
+      });
 
-    if (!error) {
+      if (handleUnauthorizedResponse(res)) return;
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+
       await fetchAllData();
       setActiveTab("schedules");
-    } else {
-      setError(`Gagal menyimpan jadwal: ${error.message}`);
+    } catch (err: any) {
+      setError(`Gagal menyimpan jadwal: ${err.message}`);
     }
   };
 
   const saveIdeaToDb = async (title?: string, content?: string): Promise<boolean> => {
     if (!content) return false;
-    const { error: dbErr } = await supabase.from("ideas").insert([
-      {
-        title: title || "Catatan Ide",
-        content,
-      },
-    ]);
+    try {
+      const res = await fetch("/api/workspace", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resource: "ideas",
+          payload: {
+            title: title || "Catatan Ide",
+            content,
+          },
+        }),
+      });
 
-    if (!dbErr) {
+      if (handleUnauthorizedResponse(res)) return false;
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+
       await fetchAllData();
       setActiveTab("ideas");
       return true;
-    } else {
-      const msg = `Gagal menyimpan ide ke Supabase: ${dbErr.message}`;
+    } catch (err: any) {
+      const msg = `Gagal menyimpan ide: ${err.message}`;
       setError(msg);
       setIdeaFormError(msg);
       return false;
@@ -599,15 +666,23 @@ export default function Home() {
         }),
       });
 
+      if (handleUnauthorizedResponse(res)) return;
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Gagal mengembangkan ide.");
 
-      const { error: dbError } = await supabase
-        .from("ideas")
-        .update({ ai_expansion: data.expansion })
-        .eq("id", idea.id);
+      const patchRes = await fetch("/api/workspace", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resource: "ideas",
+          id: idea.id,
+          updates: { ai_expansion: data.expansion },
+        }),
+      });
 
-      if (dbError) throw new Error(dbError.message);
+      if (handleUnauthorizedResponse(patchRes)) return;
+      const patchData = await patchRes.json();
+      if (!patchRes.ok) throw new Error(patchData.error);
 
       setIdeas((prev) =>
         prev.map((item) =>
@@ -650,12 +725,18 @@ export default function Home() {
   };
 
   const toggleScheduleDone = async (id: number, currentStatus: boolean) => {
-    const { error } = await supabase
-      .from("schedules")
-      .update({ is_done: !currentStatus })
-      .eq("id", id);
+    const res = await fetch("/api/workspace", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        resource: "schedules",
+        id,
+        updates: { is_done: !currentStatus },
+      }),
+    });
 
-    if (!error) {
+    if (handleUnauthorizedResponse(res)) return;
+    if (res.ok) {
       setSchedules((prev) =>
         prev.map((item) =>
           item.id === id ? { ...item, is_done: !currentStatus } : item
@@ -665,16 +746,24 @@ export default function Home() {
   };
 
   const deleteSchedule = async (id: number) => {
-    const { error } = await supabase.from("schedules").delete().eq("id", id);
-    if (!error) {
+    const res = await fetch(`/api/workspace?resource=schedules&id=${id}`, {
+      method: "DELETE",
+    });
+
+    if (handleUnauthorizedResponse(res)) return;
+    if (res.ok) {
       setSchedules((prev) => prev.filter((item) => item.id !== id));
       if (editingScheduleId === id) cancelEditingSchedule();
     }
   };
 
   const deleteIdea = async (id: number) => {
-    const { error } = await supabase.from("ideas").delete().eq("id", id);
-    if (!error) {
+    const res = await fetch(`/api/workspace?resource=ideas&id=${id}`, {
+      method: "DELETE",
+    });
+
+    if (handleUnauthorizedResponse(res)) return;
+    if (res.ok) {
       setIdeas((prev) => prev.filter((item) => item.id !== id));
       if (editingIdeaId === id) cancelEditingIdea();
     }
@@ -729,6 +818,7 @@ export default function Home() {
         }),
       });
 
+      if (handleUnauthorizedResponse(res)) return;
       const data: AssistantResponse & { error?: string } = await res.json();
       if (!res.ok) throw new Error(data.error || "Terjadi kesalahan pada server.");
 
@@ -938,7 +1028,7 @@ export default function Home() {
             <button
               type="button"
               onClick={handleLockApp}
-              title="Kunci layar aplikasi"
+              title="Kunci layar & akhiri sesi JWT"
               className="p-2 rounded-xl border bg-slate-950 border-slate-800 text-slate-400 hover:text-red-400 hover:border-red-900/60 transition cursor-pointer"
             >
               <Lock className="w-4 h-4" />
@@ -1211,7 +1301,7 @@ export default function Home() {
           </div>
         )}
 
-        {/* Tab 2: Daftar Jadwal (Dengan Fitur Edit) */}
+        {/* Tab 2: Daftar Jadwal */}
         {activeTab === "schedules" && (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
             <div className="flex items-center justify-between mb-4">
@@ -1343,7 +1433,7 @@ export default function Home() {
           </div>
         )}
 
-        {/* Tab 3: Workspace Ide & Faedah (Dengan Fitur Edit) */}
+        {/* Tab 3: Workspace Ide & Faedah */}
         {activeTab === "ideas" && (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
             <div className="flex items-center justify-between">
