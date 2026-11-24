@@ -47,12 +47,22 @@ interface RagSource {
 
 interface AssistantResponse {
   transcript: string;
-  intent: "save_schedule" | "save_idea" | "open_app" | "daily_briefing" | "general_chat";
+  intent:
+    | "save_schedule"
+    | "save_idea"
+    | "generate_workout"
+    | "log_meal"
+    | "open_app"
+    | "daily_briefing"
+    | "general_chat";
+  detectedLang?: "id" | "en" | "ar";
   taskTitle?: string;
   scheduleTime?: string;
   isoDateTime?: string;
   ideaTitle?: string;
   ideaContent?: string;
+  workoutGoal?: string;
+  mealDescription?: string;
   targetApp?: string;
   replyMessage: string;
   spokenText?: string;
@@ -426,43 +436,58 @@ export default function Home() {
     setPinError("");
   };
 
-  const speakReply = (text: string, isCalmStyle: boolean = false) => {
+  const speakReply = (
+    text: string,
+    isCalmStyle: boolean = false,
+    langCode?: "id" | "en" | "ar"
+  ) => {
     if (!voiceEnabled || typeof window === "undefined" || !("speechSynthesis" in window)) {
       return;
     }
 
     window.speechSynthesis.cancel();
 
-    const cleanText = text
-      .replace(/[\u0600-\u06FF]/g, "")
-      .replace(/[*#_`]/g, "")
+    // Deteksi otomatis jika mengandung huruf Arab
+    const hasArabic = /[\u0600-\u06FF]/.test(text);
+    const effectiveLang = langCode || (hasArabic ? "ar" : "id");
+
+    // Hanya hapus huruf Arab jika bahasa target BUKAN bahasa Arab (misal dalil sisipan pada teks Indonesia)
+    const cleanText = (
+      effectiveLang === "ar"
+        ? text.replace(/[*#_`]/g, "")
+        : text.replace(/[\u0600-\u06FF]/g, "").replace(/[*#_`]/g, "")
+    )
       .replace(/\s+/g, " ")
       .trim();
 
     if (!cleanText) return;
 
     const utterance = new SpeechSynthesisUtterance(cleanText);
-    utterance.lang = "id-ID";
-
     const voices = window.speechSynthesis.getVoices();
-    const idVoice =
-      voices.find(
-        (v) =>
-          (v.lang.includes("id-ID") || v.lang.includes("id_ID")) &&
-          (v.name.toLowerCase().includes("ardi") || v.name.toLowerCase().includes("male"))
-      ) || voices.find((v) => v.lang.includes("id-ID") || v.lang.includes("id_ID"));
 
-    if (idVoice) {
-      utterance.voice = idVoice;
-    }
-
-    if (isCalmStyle) {
-      utterance.rate = 0.90;
-      utterance.pitch = 0.90;
+    if (effectiveLang === "ar") {
+      utterance.lang = "ar-SA";
+      const arVoice = voices.find((v) => v.lang.toLowerCase().startsWith("ar"));
+      if (arVoice) utterance.voice = arVoice;
+    } else if (effectiveLang === "en") {
+      utterance.lang = "en-US";
+      const enVoice =
+        voices.find((v) => v.lang.includes("en-US") || v.lang.includes("en-GB")) ||
+        voices.find((v) => v.lang.toLowerCase().startsWith("en"));
+      if (enVoice) utterance.voice = enVoice;
     } else {
-      utterance.rate = 0.98;
-      utterance.pitch = 0.96;
+      utterance.lang = "id-ID";
+      const idVoice =
+        voices.find(
+          (v) =>
+            (v.lang.includes("id-ID") || v.lang.includes("id_ID")) &&
+            (v.name.toLowerCase().includes("ardi") || v.name.toLowerCase().includes("male"))
+        ) || voices.find((v) => v.lang.includes("id-ID") || v.lang.includes("id_ID"));
+      if (idVoice) utterance.voice = idVoice;
     }
+
+    utterance.rate = isCalmStyle ? 0.9 : 0.98;
+    utterance.pitch = isCalmStyle ? 0.92 : 0.96;
 
     utterance.onstart = () => setIsSpeaking(true);
     utterance.onend = () => setIsSpeaking(false);
@@ -894,6 +919,40 @@ export default function Home() {
     }
   };
 
+  const triggerVoiceWorkout = async (goal?: string) => {
+  if (!goal) return;
+  try {
+    const res = await fetch("/api/wellness", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "generate_workout", goal }),
+    });
+    if (handleUnauthorizedResponse(res)) return;
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    setActiveTab("wellness");
+  } catch (err: any) {
+    setError(`Gagal membuat skema olahraga: ${err.message}`);
+  }
+};
+
+const triggerVoiceMealLog = async (description?: string) => {
+  if (!description) return;
+  try {
+    const res = await fetch("/api/wellness", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "log_meal_text", description }),
+    });
+    if (handleUnauthorizedResponse(res)) return;
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    setActiveTab("wellness");
+  } catch (err: any) {
+    setError(`Gagal mencatat kalori makanan: ${err.message}`);
+  }
+};
+
   const handleExpandIdea = async (idea: IdeaItem) => {
     if (expandingIdeaId !== null) return;
     setExpandingIdeaId(idea.id);
@@ -1097,10 +1156,10 @@ export default function Home() {
       setChatHistory((prev) => [...prev, userMsg, aiMsg]);
       setStatusLog("Selesai!");
 
-      speakReply(voiceScript, data.intent === "general_chat");
+      speakReply(voiceScript, data.intent === "general_chat", data.detectedLang);
 
-      if (data.intent === "open_app") {
-        handleOpenApp(data.targetApp);
+     if (data.intent === "open_app") {
+     handleOpenApp(data.targetApp);
       } else if (data.intent === "save_schedule") {
         await saveScheduleToDb(
           data.taskTitle || data.transcript,
@@ -1112,9 +1171,13 @@ export default function Home() {
           data.ideaTitle || "Catatan Ide Suara",
           data.ideaContent || data.transcript
         );
-      } else {
-        setActiveTab("chat");
-      }
+   } else if (data.intent === "generate_workout") {
+     await triggerVoiceWorkout(data.workoutGoal || data.transcript);
+   } else if (data.intent === "log_meal") {
+     await triggerVoiceMealLog(data.mealDescription || data.transcript);
+   } else {
+     setActiveTab("chat");
+   }
     } catch (err: any) {
       setError(err.message);
       setStatusLog("Gagal memproses perintah.");

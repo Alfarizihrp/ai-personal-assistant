@@ -58,7 +58,9 @@ export async function POST(req: Request) {
             (doc) =>
               doc.title.toLowerCase().includes(qLower) ||
               doc.preview.toLowerCase().includes(qLower) ||
-              qLower.split(" ").some((w: string) => w.length > 3 && doc.preview.toLowerCase().includes(w))
+              qLower
+                .split(" ")
+                .some((w: string) => w.length > 3 && doc.preview.toLowerCase().includes(w))
           );
 
           if (guestMatches.length > 0) {
@@ -162,83 +164,103 @@ ATURAN OUTPUT JSON:
     }
 
     const MODEL_NAME = "gemini-3.8-flash";
- const MAX_RETRIES = 3;
- let lastError: any = null;
+    const MAX_RETRIES = 3;
+    let lastError: any = null;
 
- for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-   try {
-     const response = await ai.models.generateContent({
-       model: MODEL_NAME,
-       contents,
-       config: {
-         responseMimeType: "application/json",
-         responseSchema: {
-           type: Type.OBJECT,
-           properties: {
-             transcript: { type: Type.STRING },
-             detectedLang: {
-               type: Type.STRING,
-               enum: ["id", "en", "ar"],
-             },
-             intent: {
-               type: Type.STRING,
-               enum: [
-                 "save_schedule",
-                 "save_idea",
-                 "generate_workout",
-                 "log_meal",
-                 "open_app",
-                 "daily_briefing",
-                 "general_chat",
-               ],
-             },
-             taskTitle: { type: Type.STRING },
-             scheduleTime: { type: Type.STRING },
-             isoDateTime: { type: Type.STRING },
-             ideaTitle: { type: Type.STRING },
-             ideaContent: { type: Type.STRING },
-             workoutGoal: { type: Type.STRING },
-             mealDescription: { type: Type.STRING },
-             targetApp: { type: Type.STRING },
-             replyMessage: { type: Type.STRING },
-             spokenText: { type: Type.STRING },
-           },
-           required: [
-             "transcript",
-             "detectedLang",
-             "intent",
-             "replyMessage",
-             "spokenText",
-           ],
-         },
-       },
-     });
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const response = await ai.models.generateContent({
+          model: MODEL_NAME,
+          contents,
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                transcript: { type: Type.STRING },
+                detectedLang: {
+                  type: Type.STRING,
+                  enum: ["id", "en", "ar"],
+                },
+                intent: {
+                  type: Type.STRING,
+                  enum: [
+                    "save_schedule",
+                    "save_idea",
+                    "generate_workout",
+                    "log_meal",
+                    "open_app",
+                    "daily_briefing",
+                    "general_chat",
+                  ],
+                },
+                taskTitle: { type: Type.STRING },
+                scheduleTime: { type: Type.STRING },
+                isoDateTime: { type: Type.STRING },
+                ideaTitle: { type: Type.STRING },
+                ideaContent: { type: Type.STRING },
+                workoutGoal: { type: Type.STRING },
+                mealDescription: { type: Type.STRING },
+                targetApp: { type: Type.STRING },
+                replyMessage: { type: Type.STRING },
+                spokenText: { type: Type.STRING },
+              },
+              required: [
+                "transcript",
+                "detectedLang",
+                "intent",
+                "replyMessage",
+                "spokenText",
+              ],
+            },
+          },
+        });
 
-     const parsed = JSON.parse(response.text || "{}");
-     return NextResponse.json({
-       ...parsed,
-       sources: matchedSources,
-     });
-   } catch (err: any) {
-     lastError = err;
-     const msg = String(err?.message || err);
-     const isTransient =
-       err.status === 503 ||
-       err.status === 429 ||
-       msg.includes("503") ||
-       msg.includes("429") ||
-       msg.includes("UNAVAILABLE");
+        const rawText = (response.text || "{}").replace(/```json|```/g, "").trim();
+        const parsed = JSON.parse(rawText);
 
-     if (isTransient && attempt < MAX_RETRIES) {
-       await new Promise((resolve) => setTimeout(resolve, attempt * 1200));
-       continue;
-     }
-     throw err;
-   }
- }
+        return NextResponse.json({
+          transcript: parsed.transcript || textInput || "(Audio)",
+          detectedLang: parsed.detectedLang || "id",
+          intent: parsed.intent || "general_chat",
+          taskTitle: parsed.taskTitle || "",
+          scheduleTime: parsed.scheduleTime || "",
+          isoDateTime: parsed.isoDateTime || "",
+          ideaTitle: parsed.ideaTitle || "",
+          ideaContent: parsed.ideaContent || "",
+          workoutGoal: parsed.workoutGoal || "",
+          mealDescription: parsed.mealDescription || "",
+          targetApp: parsed.targetApp || "",
+          replyMessage:
+            parsed.replyMessage ||
+            "Afwan Akhi, permintaan telah diproses namun balasan teks kosong.",
+          spokenText:
+            parsed.spokenText ||
+            parsed.replyMessage ||
+            "Permintaan telah diproses.",
+          sources: matchedSources,
+        });
+      } catch (err: any) {
+        lastError = err;
+        const msg = String(err?.message || err);
+        const isTransient =
+          err.status === 503 ||
+          err.status === 429 ||
+          msg.includes("503") ||
+          msg.includes("429") ||
+          msg.includes("UNAVAILABLE");
 
- throw lastError || new Error("Server Gemini sedang sibuk. Silakan coba lagi.");
+        if (isTransient && attempt < MAX_RETRIES) {
+          await new Promise((resolve) => setTimeout(resolve, attempt * 1200));
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    throw lastError || new Error("Server Gemini sedang sibuk. Silakan coba lagi.");
   } catch (error: any) {
+    console.error("[POST /api/assistant Error]:", error);
     return NextResponse.json(
       { error: error.message || "Gagal memproses permintaan." },
       { status: 500 }
