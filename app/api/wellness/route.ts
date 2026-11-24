@@ -6,7 +6,45 @@ import { supabaseAdmin } from "@/lib/supabase-server";
 import { GUEST_NUTRITION_LOGS, GUEST_WORKOUT_LOGS } from "@/lib/guest-sandbox";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
-const GEMINI_MODEL = "gemini-3.8-flash";
+
+// Urutan model dari yang tercepat hingga cadangan jika terjadi lonjakan trafik (503)
+const FALLBACK_MODELS = [
+  "gemini-3.8-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-flash",
+];
+
+async function generateWithFallback(params: {
+  contents: any;
+  config?: Record<string, any>;
+}) {
+  let lastError: any = null;
+
+  for (const model of FALLBACK_MODELS) {
+    try {
+      return await ai.models.generateContent({
+        model,
+        contents: params.contents,
+        config: params.config,
+      });
+    } catch (err: any) {
+      lastError = err;
+      const msg = String(err?.message || err);
+      // Jika 503 (High Demand), 429 (Rate Limit), atau 404 (Model not found), lanjut ke model berikutnya
+      if (
+        msg.includes("503") ||
+        msg.includes("UNAVAILABLE") ||
+        msg.includes("429") ||
+        msg.includes("404")
+      ) {
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw lastError || new Error("Semua model AI sedang sibuk. Coba beberapa saat lagi.");
+}
 
 async function isGuestSession(): Promise<boolean> {
   const cookieStore = await cookies();
@@ -70,7 +108,7 @@ export async function POST(req: Request) {
     const body = await req.json();
     const guest = await isGuestSession();
 
-    // 1. Analisis Foto Makanan (Cepat dengan Native JSON Mode)
+    // 1. Analisis Foto Makanan (Zero-Blob Vision Inference)
     if (body.action === "analyze_meal") {
       const { imageBase64, mimeType } = body;
       if (!imageBase64) {
@@ -85,8 +123,7 @@ export async function POST(req: Request) {
 - fat_g (number gram)
 - ai_notes (string saran gizi 1 kalimat singkat)`;
 
-      const result = await ai.models.generateContent({
-        model: GEMINI_MODEL,
+      const result = await generateWithFallback({
         contents: [
           prompt,
           {
@@ -138,7 +175,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ entry: data });
     }
 
-    // 2. Buat Skema Olahraga Cepat (< 2 Detik)
+    // 2. Buat Skema Olahraga Terpantau AI
     if (body.action === "generate_workout") {
       const goal = body.goal?.trim() || "Latihan kebugaran 30 menit di rumah tanpa alat";
 
@@ -148,8 +185,7 @@ Keluarkan JSON dengan field:
 - duration_minutes (number durasi menit)
 - ai_plan (string poin pemanasan, 3-4 gerakan inti set x repetisi, dan pendinginan maksimal 3 kalimat)`;
 
-      const result = await ai.models.generateContent({
-        model: GEMINI_MODEL,
+      const result = await generateWithFallback({
         contents: prompt,
         config: {
           responseMimeType: "application/json",
@@ -204,15 +240,16 @@ export async function PATCH(req: Request) {
     const guest = await isGuestSession();
 
     const evalPrompt = `Pengguna baru menyelesaikan olahraga "${routine_name}" (${duration_minutes} menit). Berikan 1-2 kalimat evaluasi pelatih yang memotivasi dan saran hidrasi singkat dalam bahasa Indonesia.`;
-    const evalRes = await ai.models.generateContent({
-      model: GEMINI_MODEL,
+    const evalRes = await generateWithFallback({
       contents: evalPrompt,
       config: {
         temperature: 0.4,
         thinkingConfig: { thinkingBudget: 0 },
       },
     });
-    const ai_evaluation = (evalRes.text || "Luar biasa! Pastikan cukup minum air putih untuk pemulihan otot.").trim();
+    const ai_evaluation = (
+      evalRes.text || "Luar biasa! Pastikan cukup minum air putih untuk pemulihan otot."
+    ).trim();
 
     if (guest) {
       return NextResponse.json({ success: true, ai_evaluation, sandbox: true });
@@ -225,6 +262,32 @@ export async function PATCH(req: Request) {
 
     if (error) throw new Error(error.message);
     return NextResponse.json({ success: true, ai_evaluation });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+export async function DELETE(req: Request) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const type = searchParams.get("type"); // "workout" atau "nutrition"
+    const id = searchParams.get("id");
+
+    if ((type !== "workout" && type !== "nutrition") || !id) {
+      return NextResponse.json({ error: "Parameter hapus tidak valid." }, { status: 400 });
+    }
+
+    if (await isGuestSession()) {
+      return NextResponse.json({ success: true, sandbox: true });
+    }
+
+    const table = type === "workout" ? "workout_logs" : "nutrition_logs";
+    const { error } = await supabaseAdmin
+      .from(table)
+      .delete()
+      .eq("id", Number(id));
+
+    if (error) throw new Error(error.message);
+    return NextResponse.json({ success: true });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }

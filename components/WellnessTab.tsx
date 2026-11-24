@@ -9,6 +9,10 @@ import {
   Loader2,
   Sparkles,
   Plus,
+  Trash2,
+  CalendarPlus,
+  Check,
+  X,
 } from "lucide-react";
 import { compressImageToBase64 } from "@/lib/image-compress";
 
@@ -42,8 +46,15 @@ export default function WellnessTab() {
   const [workoutGoal, setWorkoutGoal] = useState("");
   const [generatingWorkout, setGeneratingWorkout] = useState(false);
   const [completingId, setCompletingId] = useState<number | null>(null);
-  const [errorMsg, setErrorMsg] = useState("");
+  const [deletingId, setDeletingId] = useState<number | null>(null);
 
+  // State Masukkan ke Jadwal
+  const [schedulingId, setSchedulingId] = useState<number | null>(null);
+  const [scheduleTimeInput, setScheduleTimeInput] = useState("Hari ini, 17:00 WIB");
+  const [savingScheduleId, setSavingScheduleId] = useState<number | null>(null);
+  const [scheduledIds, setScheduledIds] = useState<Record<number, boolean>>({});
+
+  const [errorMsg, setErrorMsg] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const fetchWellnessData = async () => {
@@ -96,6 +107,62 @@ export default function WellnessTab() {
     }
   };
 
+  const handleDeleteEntry = async (type: "workout" | "nutrition", id: number) => {
+    if (deletingId === id) return;
+    setDeletingId(id);
+    setErrorMsg("");
+
+    try {
+      const res = await fetch(`/api/wellness?type=${type}&id=${id}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Gagal menghapus data.");
+
+      if (type === "workout") {
+        setWorkouts((prev) => prev.filter((item) => item.id !== id));
+      } else {
+        setNutrition((prev) => prev.filter((item) => item.id !== id));
+      }
+    } catch (err: any) {
+      setErrorMsg(err.message);
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const handleAddWorkoutToSchedule = async (item: WorkoutEntry) => {
+    if (savingScheduleId === item.id) return;
+    setSavingScheduleId(item.id);
+    setErrorMsg("");
+
+    try {
+      const res = await fetch("/api/workspace", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resource: "schedules",
+          payload: {
+            title: `Olahraga: ${item.routine_name} (${item.duration_minutes} mnt)`,
+            schedule_time: scheduleTimeInput.trim() || "Hari ini, 17:00 WIB",
+            target_datetime: null,
+            reminded: false,
+          },
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Gagal memasukkan ke jadwal.");
+
+      setScheduledIds((prev) => ({ ...prev, [item.id]: true }));
+      setSchedulingId(null);
+    } catch (err: any) {
+      setErrorMsg(err.message);
+    } finally {
+      setSavingScheduleId(null);
+    }
+  };
+
   const handleGenerateWorkout = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!workoutGoal.trim() || generatingWorkout) return;
@@ -104,7 +171,7 @@ export default function WellnessTab() {
     setErrorMsg("");
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000); // Maksimal tunggu 20 detik
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
 
     try {
       const res = await fetch("/api/wellness", {
@@ -166,7 +233,6 @@ export default function WellnessTab() {
     }
   };
 
-  // Hitung total kalori & protein dari log terbaru
   const totalCalories = nutrition.reduce((acc, item) => acc + Number(item.calories || 0), 0);
   const totalProtein = nutrition.reduce((acc, item) => acc + Number(item.protein_g || 0), 0);
   const calorieTarget = 2000;
@@ -203,7 +269,6 @@ export default function WellnessTab() {
           </span>
         </div>
 
-        {/* Progress Bar Kalori */}
         <div className="w-full bg-slate-950 h-2 rounded-full overflow-hidden border border-slate-800">
           <div
             className="bg-gradient-to-r from-emerald-500 to-orange-400 h-full transition-all duration-500"
@@ -212,11 +277,13 @@ export default function WellnessTab() {
         </div>
 
         <div className="flex items-center justify-between text-[11px] text-slate-400">
-          <span>Total Protein Tercatat: <strong className="text-emerald-400">{totalProtein.toFixed(1)}g</strong></span>
+          <span>
+            Total Protein Tercatat:{" "}
+            <strong className="text-emerald-400">{totalProtein.toFixed(1)}g</strong>
+          </span>
           <span>Kompresi Otomatis &lt;70KB</span>
         </div>
 
-        {/* Tombol Unggah / Foto Makanan */}
         <input
           ref={fileInputRef}
           type="file"
@@ -244,7 +311,6 @@ export default function WellnessTab() {
           )}
         </button>
 
-        {/* Daftar Riwayat Makanan */}
         <div className="space-y-2 pt-1 max-h-56 overflow-y-auto pr-1">
           {nutrition.length === 0 ? (
             <p className="text-xs text-slate-500 text-center py-3">
@@ -258,9 +324,20 @@ export default function WellnessTab() {
               >
                 <div className="flex items-start justify-between gap-2">
                   <p className="text-xs font-medium text-slate-100">{item.food_name}</p>
-                  <span className="text-xs font-bold text-orange-400 shrink-0">
-                    {item.calories} kkal
-                  </span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-xs font-bold text-orange-400">
+                      {item.calories} kkal
+                    </span>
+                    <button
+                      type="button"
+                      disabled={deletingId === item.id}
+                      onClick={() => handleDeleteEntry("nutrition", item.id)}
+                      title="Hapus log makanan"
+                      className="text-slate-600 hover:text-rose-400 transition cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
                 <div className="flex gap-3 text-[10px] text-slate-400">
                   <span>Protein: {item.protein_g}g</span>
@@ -309,57 +386,131 @@ export default function WellnessTab() {
           </button>
         </form>
 
-        <div className="space-y-2.5 max-h-64 overflow-y-auto pr-1">
-          {workouts.map((w) => (
-            <div
-              key={w.id}
-              className="bg-slate-950/80 border border-slate-800/80 rounded-xl p-3 space-y-2"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <h3 className="text-xs font-semibold text-slate-100">
-                    {w.routine_name}
-                  </h3>
-                  <span className="text-[10px] text-blue-400">
-                    Durasi Target: {w.duration_minutes} menit
-                  </span>
-                </div>
+        <div className="space-y-2.5 max-h-80 overflow-y-auto pr-1">
+          {workouts.map((w) => {
+            const isSchedulingThis = schedulingId === w.id;
+            const isAlreadyScheduled = scheduledIds[w.id];
 
-                {w.is_completed ? (
-                  <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-1 rounded-lg bg-emerald-950/80 text-emerald-400 border border-emerald-800/60 shrink-0">
-                    <CheckCircle2 className="w-3 h-3" />
-                    Selesai
-                  </span>
-                ) : (
+            return (
+              <div
+                key={w.id}
+                className="bg-slate-950/80 border border-slate-800/80 rounded-xl p-3 space-y-2"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <h3 className="text-xs font-semibold text-slate-100">
+                      {w.routine_name}
+                    </h3>
+                    <span className="text-[10px] text-blue-400">
+                      Durasi Target: {w.duration_minutes} menit
+                    </span>
+                  </div>
+
                   <button
                     type="button"
-                    disabled={completingId === w.id}
-                    onClick={() => handleCompleteWorkout(w)}
-                    className="inline-flex items-center gap-1 text-[10px] font-medium px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-emerald-700 text-slate-200 hover:text-white transition cursor-pointer shrink-0"
+                    disabled={deletingId === w.id}
+                    onClick={() => handleDeleteEntry("workout", w.id)}
+                    title="Hapus skema olahraga"
+                    className="text-slate-600 hover:text-rose-400 p-1 transition cursor-pointer shrink-0"
                   >
-                    {completingId === w.id ? (
-                      <Loader2 className="w-3 h-3 animate-spin" />
+                    {deletingId === w.id ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
                     ) : (
-                      <Sparkles className="w-3 h-3 text-amber-400" />
+                      <Trash2 className="w-3.5 h-3.5" />
                     )}
-                    <span>Selesai & Evaluasi</span>
                   </button>
+                </div>
+
+                {w.ai_plan && (
+                  <p className="text-[11px] text-slate-300 leading-relaxed bg-slate-900/70 p-2 rounded-lg border border-slate-800/60">
+                    {w.ai_plan}
+                  </p>
+                )}
+
+                {/* Form Singkat Pilih Waktu untuk Dimasukkan ke Tab Jadwal */}
+                {isSchedulingThis && (
+                  <div className="flex items-center gap-1.5 bg-slate-900 border border-blue-800/60 rounded-lg p-2">
+                    <input
+                      type="text"
+                      value={scheduleTimeInput}
+                      onChange={(e) => setScheduleTimeInput(e.target.value)}
+                      placeholder="Waktu (mis: Besok, 16:30 WIB)..."
+                      className="flex-1 bg-slate-950 border border-slate-800 rounded px-2 py-1 text-[11px] text-slate-100 focus:outline-none focus:border-blue-500"
+                    />
+                    <button
+                      type="button"
+                      disabled={savingScheduleId === w.id}
+                      onClick={() => handleAddWorkoutToSchedule(w)}
+                      className="px-2.5 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-medium flex items-center gap-1 cursor-pointer shrink-0"
+                    >
+                      {savingScheduleId === w.id ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Check className="w-3 h-3" />
+                      )}
+                      <span>Simpan</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSchedulingId(null)}
+                      className="p-1 text-slate-400 hover:text-slate-200 cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+
+                {/* Baris Tombol Aksi: Masukkan ke Jadwal & Selesai Latihan */}
+                <div className="flex items-center justify-between gap-2 pt-1">
+                  {isAlreadyScheduled ? (
+                    <span className="inline-flex items-center gap-1 text-[10px] text-blue-300 bg-blue-950/60 border border-blue-800/50 px-2 py-1 rounded-lg">
+                      <Check className="w-3 h-3" />
+                      Masuk ke Tab Jadwal
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSchedulingId(isSchedulingThis ? null : w.id);
+                        setScheduleTimeInput("Hari ini, 17:00 WIB");
+                      }}
+                      className="inline-flex items-center gap-1 text-[10px] font-medium px-2.5 py-1 rounded-lg bg-blue-950/60 hover:bg-blue-900/70 text-blue-300 border border-blue-800/50 transition cursor-pointer"
+                    >
+                      <CalendarPlus className="w-3 h-3" />
+                      <span>Masukkan ke Jadwal</span>
+                    </button>
+                  )}
+
+                  {w.is_completed ? (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-1 rounded-lg bg-emerald-950/80 text-emerald-400 border border-emerald-800/60 shrink-0">
+                      <CheckCircle2 className="w-3 h-3" />
+                      Selesai
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={completingId === w.id}
+                      onClick={() => handleCompleteWorkout(w)}
+                      className="inline-flex items-center gap-1 text-[10px] font-medium px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-emerald-700 text-slate-200 hover:text-white transition cursor-pointer shrink-0"
+                    >
+                      {completingId === w.id ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3 h-3 text-amber-400" />
+                      )}
+                      <span>Selesai & Evaluasi</span>
+                    </button>
+                  )}
+                </div>
+
+                {w.ai_evaluation && (
+                  <div className="text-[11px] text-emerald-300 bg-emerald-950/40 border border-emerald-800/50 p-2 rounded-lg">
+                    <strong>Evaluasi Coach AI:</strong> {w.ai_evaluation}
+                  </div>
                 )}
               </div>
-
-              {w.ai_plan && (
-                <p className="text-[11px] text-slate-300 leading-relaxed bg-slate-900/70 p-2 rounded-lg border border-slate-800/60">
-                  {w.ai_plan}
-                </p>
-              )}
-
-              {w.ai_evaluation && (
-                <div className="text-[11px] text-emerald-300 bg-emerald-950/40 border border-emerald-800/50 p-2 rounded-lg">
-                  <strong>Evaluasi Coach AI:</strong> {w.ai_evaluation}
-                </div>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>
