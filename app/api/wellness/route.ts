@@ -150,7 +150,7 @@ export async function POST(req: Request) {
     const body = await req.json();
     const guest = await isGuestSession();
 
-    // 1. Analisis Foto Makanan (Zero-Blob Vision Inference)
+    // 1A. Analisis Foto Makanan (Zero-Blob Vision Inference)
     if (body.action === "analyze_meal") {
       const { imageBase64, mimeType } = body;
       if (!imageBase64) {
@@ -218,7 +218,71 @@ export async function POST(req: Request) {
       return NextResponse.json({ entry: data });
     }
 
-    // 2. Buat Skema Olahraga (Dengan Graceful Degradation jika AI 503)
+    // 1B. Catat Makanan dari Suara / Teks (Tanpa Foto, mendukung ID/EN/AR)
+    if (body.action === "log_meal_text") {
+      const description = body.description?.trim() || "Makanan Harian";
+
+      const prompt = `Estimasi nilai gizi dari deskripsi makanan berikut: "${description}".
+Gunakan bahasa yang sama dengan input pengguna (Indonesia, English, atau Arab) untuk nilai food_name dan ai_notes.
+Keluarkan HANYA JSON valid tanpa markdown dengan field:
+{
+  "food_name": "Nama menu makanan & porsi singkat",
+  "calories": 400,
+  "protein_g": 20,
+  "carbs_g": 45,
+  "fat_g": 12,
+  "ai_notes": "Saran gizi 1 kalimat singkat"
+}`;
+
+      let parsed = {
+        food_name: description,
+        calories: 350,
+        protein_g: 15,
+        carbs_g: 45,
+        fat_g: 10,
+        ai_notes: "Dicatat melalui perintah suara/teks.",
+      };
+
+      try {
+        const result = await generateWithFallback({
+          contents: prompt,
+          config: {
+            responseMimeType: "application/json",
+            temperature: 0.2,
+          },
+        });
+        parsed = parseAiJson(result.text || "{}", parsed);
+      } catch {
+        // Gunakan estimasi default jika AI sedang sibuk
+      }
+
+      const logPayload = {
+        food_name: parsed.food_name || description,
+        calories: Number(parsed.calories) || 0,
+        protein_g: Number(parsed.protein_g) || 0,
+        carbs_g: Number(parsed.carbs_g) || 0,
+        fat_g: Number(parsed.fat_g) || 0,
+        ai_notes: parsed.ai_notes || "",
+      };
+
+      if (guest) {
+        return NextResponse.json({
+          entry: { id: Date.now(), ...logPayload, created_at: new Date().toISOString() },
+          sandbox: true,
+        });
+      }
+
+      const { data, error } = await supabaseAdmin
+        .from("nutrition_logs")
+        .insert([logPayload])
+        .select()
+        .single();
+
+      if (error) throw new Error(`Database error (nutrition_logs): ${error.message}`);
+      return NextResponse.json({ entry: data });
+    }
+
+    // 2. Buat Skema Olahraga (Dengan Graceful Degradation jika AI 503 & mendukung ID/EN/AR)
     if (body.action === "generate_workout") {
       const goal = body.goal?.trim() || "Latihan kebugaran 30 menit di rumah tanpa alat";
       const fallbackPlan = buildFallbackWorkoutPlan(goal);
@@ -226,6 +290,7 @@ export async function POST(req: Request) {
       let parsed = fallbackPlan;
       try {
         const prompt = `Buatkan 1 sesi rencana latihan singkat & praktis untuk target: "${goal}".
+Gunakan bahasa yang sama dengan input target pengguna (Indonesia, English, atau Arab) untuk nilai routine_name dan ai_plan.
 Keluarkan HANYA JSON valid tanpa markdown dengan field:
 {
   "routine_name": "Judul sesi singkat",
@@ -290,7 +355,7 @@ export async function PATCH(req: Request) {
       "Alhamdulillaah, sesi latihan selesai! Pastikan minum air putih yang cukup dan istirahat agar pemulihan otot optimal.";
 
     try {
-      const evalPrompt = `Pengguna baru menyelesaikan olahraga "${routine_name}" (${duration_minutes} menit). Berikan 1-2 kalimat evaluasi pelatih yang memotivasi dan saran hidrasi singkat dalam bahasa Indonesia.`;
+      const evalPrompt = `Pengguna baru menyelesaikan olahraga "${routine_name}" (${duration_minutes} menit). Berikan 1-2 kalimat evaluasi pelatih yang memotivasi dan saran hidrasi singkat dalam bahasa yang sama dengan judul olahraga tersebut.`;
       const evalRes = await generateWithFallback({
         contents: evalPrompt,
         config: { temperature: 0.4 },
