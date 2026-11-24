@@ -426,13 +426,6 @@ export default function Home() {
     setPinError("");
   };
 
-  useEffect(() => {
-    try {
-      localStorage.setItem("akhi_chat_history", JSON.stringify(chatHistory));
-    } catch {}
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [chatHistory]);
-
   const speakReply = (text: string, isCalmStyle: boolean = false) => {
     if (!voiceEnabled || typeof window === "undefined" || !("speechSynthesis" in window)) {
       return;
@@ -1709,100 +1702,123 @@ export default function Home() {
               </p>
             ) : (
               <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
-                {chatHistory.map((msg, idx) => {
-                  const isSavingThis = savingChatId === msg.id;
-                  const isSavedThis = savedChatIds[msg.id];
+                {(() => {
+                  // Kelompokkan pesan menjadi pasangan [User, Assistant] lalu tampilkan yang terbaru di paling atas
+                  const turns: { items: { msg: ChatMessage; origIdx: number }[] }[] = [];
+                  for (let i = 0; i < chatHistory.length; i++) {
+                    const current = chatHistory[i];
+                    const next = chatHistory[i + 1];
+                    if (current.role === "user" && next?.role === "assistant") {
+                      turns.push({
+                        items: [
+                          { msg: current, origIdx: i },
+                          { msg: next, origIdx: i + 1 },
+                        ],
+                      });
+                      i++;
+                    } else {
+                      turns.push({ items: [{ msg: current, origIdx: i }] });
+                    }
+                  }
 
-                  return (
-                    <div
-                      key={msg.id}
-                      className={`rounded-xl p-3.5 text-sm ${
-                        msg.role === "user"
-                          ? "bg-blue-950/40 border border-blue-900/50 ml-6 text-slate-100"
-                          : "bg-slate-950 border border-slate-800 mr-2 text-slate-100"
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-2 mb-1.5">
-                        <span
-                          className={`text-[10px] font-semibold uppercase tracking-wider ${
-                            msg.role === "user" ? "text-blue-400" : "text-emerald-400"
-                          }`}
-                        >
-                          {msg.role === "user" ? "Akhi" : "Asisten"} • {msg.timestamp}
-                        </span>
+                  return turns.reverse().map((turn, tIdx) => (
+                    <div key={tIdx} className="space-y-2 pb-3 border-b border-slate-800/60 last:border-b-0">
+                      {turn.items.map(({ msg, origIdx }) => {
+                        const isSavingThis = savingChatId === msg.id;
+                        const isSavedThis = savedChatIds[msg.id];
 
-                        {msg.role === "assistant" && (
-                          <div className="flex items-center gap-2.5">
-                            <button
-                              type="button"
-                              disabled={isSavingThis || isSavedThis}
-                              onClick={() => handleSaveFaedahToWorkspace(msg, idx)}
-                              className={`text-[11px] flex items-center gap-1 transition cursor-pointer ${
-                                isSavedThis
-                                  ? "text-amber-400 cursor-default"
-                                  : "text-slate-400 hover:text-amber-300"
-                              }`}
-                              title="Simpan catatan faedah ini ke Workspace Supabase"
-                            >
-                              {isSavingThis ? (
-                                <>
-                                  <Loader2 className="w-3 h-3 animate-spin" />
-                                  <span>Menyimpan...</span>
-                                </>
-                              ) : isSavedThis ? (
-                                <>
-                                  <Check className="w-3 h-3" />
-                                  <span>Tersimpan</span>
-                                </>
-                              ) : (
-                                <>
-                                  <BookmarkPlus className="w-3 h-3" />
-                                  <span>Simpan Faedah</span>
-                                </>
+                        return (
+                          <div
+                            key={msg.id}
+                            className={`rounded-xl p-3.5 text-sm ${
+                              msg.role === "user"
+                                ? "bg-blue-950/40 border border-blue-900/50 ml-6 text-slate-100"
+                                : "bg-slate-950 border border-slate-800 mr-2 text-slate-100"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2 mb-1.5">
+                              <span
+                                className={`text-[10px] font-semibold uppercase tracking-wider ${
+                                  msg.role === "user" ? "text-blue-400" : "text-emerald-400"
+                                }`}
+                              >
+                                {msg.role === "user" ? "Akhi" : "Asisten"} • {msg.timestamp}
+                              </span>
+
+                              {msg.role === "assistant" && (
+                                <div className="flex items-center gap-2.5">
+                                  <button
+                                    type="button"
+                                    disabled={isSavingThis || isSavedThis}
+                                    onClick={() => handleSaveFaedahToWorkspace(msg, origIdx)}
+                                    className={`text-[11px] flex items-center gap-1 transition cursor-pointer ${
+                                      isSavedThis
+                                        ? "text-amber-400 cursor-default"
+                                        : "text-slate-400 hover:text-amber-300"
+                                    }`}
+                                    title="Simpan catatan faedah ini ke Workspace Supabase"
+                                  >
+                                    {isSavingThis ? (
+                                      <>
+                                        <Loader2 className="w-3 h-3 animate-spin" />
+                                        <span>Menyimpan...</span>
+                                      </>
+                                    ) : isSavedThis ? (
+                                      <>
+                                        <Check className="w-3 h-3" />
+                                        <span>Tersimpan</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <BookmarkPlus className="w-3 h-3" />
+                                        <span>Simpan Faedah</span>
+                                      </>
+                                    )}
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      speakReply(
+                                        msg.spokenText || msg.text,
+                                        msg.intent === "general_chat" || msg.intent === "daily_briefing"
+                                      )
+                                    }
+                                    className="text-[11px] text-emerald-400 hover:text-emerald-300 flex items-center gap-1 cursor-pointer"
+                                  >
+                                    <Volume2 className="w-3 h-3" />
+                                    <span>Dengar</span>
+                                  </button>
+                                </div>
                               )}
-                            </button>
+                            </div>
 
-                            <button
-                              type="button"
-                              onClick={() =>
-                                speakReply(
-                                  msg.spokenText || msg.text,
-                                  msg.intent === "general_chat" || msg.intent === "daily_briefing"
-                                )
-                              }
-                              className="text-[11px] text-emerald-400 hover:text-emerald-300 flex items-center gap-1 cursor-pointer"
-                            >
-                              <Volume2 className="w-3 h-3" />
-                              <span>Dengar</span>
-                            </button>
+                            <p className="text-xs sm:text-sm leading-relaxed whitespace-pre-line">
+                              {msg.text}
+                            </p>
+
+                            {msg.role === "assistant" && msg.sources && msg.sources.length > 0 && (
+                              <div className="mt-3 pt-2.5 border-t border-slate-800/80 flex flex-wrap items-center gap-1.5">
+                                <span className="text-[10px] text-purple-400 font-medium flex items-center gap-1">
+                                  <BrainCircuit className="w-3 h-3" />
+                                  <span>Sumber Memori:</span>
+                                </span>
+                                {msg.sources.map((src, sIdx) => (
+                                  <span
+                                    key={sIdx}
+                                    className="text-[10px] bg-purple-950/60 border border-purple-800/60 text-purple-200 px-2 py-0.5 rounded-md"
+                                  >
+                                    {src.title} ({src.similarity}%)
+                                  </span>
+                                ))}
+                              </div>
+                            )}
                           </div>
-                        )}
-                      </div>
-
-                      <p className="text-xs sm:text-sm leading-relaxed whitespace-pre-line">
-                        {msg.text}
-                      </p>
-
-                      {msg.role === "assistant" && msg.sources && msg.sources.length > 0 && (
-                        <div className="mt-3 pt-2.5 border-t border-slate-800/80 flex flex-wrap items-center gap-1.5">
-                          <span className="text-[10px] text-purple-400 font-medium flex items-center gap-1">
-                            <BrainCircuit className="w-3 h-3" />
-                            <span>Sumber Memori:</span>
-                          </span>
-                          {msg.sources.map((src, sIdx) => (
-                            <span
-                              key={sIdx}
-                              className="text-[10px] bg-purple-950/60 border border-purple-800/60 text-purple-200 px-2 py-0.5 rounded-md"
-                            >
-                              {src.title} ({src.similarity}%)
-                            </span>
-                          ))}
-                        </div>
-                      )}
+                        );
+                      })}
                     </div>
-                  );
-                })}
-                <div ref={chatEndRef} />
+                  ));
+                })()}
               </div>
             )}
           </div>

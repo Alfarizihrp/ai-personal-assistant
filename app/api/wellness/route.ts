@@ -7,11 +7,10 @@ import { GUEST_NUTRITION_LOGS, GUEST_WORKOUT_LOGS } from "@/lib/guest-sandbox";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
-// Urutan model dari yang tercepat hingga cadangan jika terjadi lonjakan trafik (503)
 const FALLBACK_MODELS = [
-  "gemini-3.8-flash",
-  "gemini-2.5-flash-lite",
   "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-3.8-flash",
 ];
 
 async function generateWithFallback(params: {
@@ -30,12 +29,13 @@ async function generateWithFallback(params: {
     } catch (err: any) {
       lastError = err;
       const msg = String(err?.message || err);
-      // Jika 503 (High Demand), 429 (Rate Limit), atau 404 (Model not found), lanjut ke model berikutnya
+      console.warn(`[Wellness AI] Model ${model} gagal:`, msg);
       if (
         msg.includes("503") ||
         msg.includes("UNAVAILABLE") ||
         msg.includes("429") ||
-        msg.includes("404")
+        msg.includes("404") ||
+        msg.includes("400")
       ) {
         continue;
       }
@@ -99,6 +99,7 @@ export async function GET() {
       workouts: workoutRes.data || [],
     });
   } catch (err: any) {
+    console.error("[GET /api/wellness Error]:", err.message);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
@@ -115,13 +116,15 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "Gambar makanan wajib diunggah." }, { status: 400 });
       }
 
-      const prompt = `Analisis foto makanan ini sebagai ahli gizi. Estimasi porsi di foto dan keluarkan JSON dengan field:
-- food_name (string nama makanan & porsi singkat)
-- calories (number kkal)
-- protein_g (number gram)
-- carbs_g (number gram)
-- fat_g (number gram)
-- ai_notes (string saran gizi 1 kalimat singkat)`;
+      const prompt = `Analisis foto makanan ini sebagai ahli gizi. Estimasi porsi di foto dan keluarkan HANYA JSON valid tanpa markdown dengan field:
+{
+  "food_name": "Nama makanan & porsi singkat",
+  "calories": 400,
+  "protein_g": 25,
+  "carbs_g": 45,
+  "fat_g": 12,
+  "ai_notes": "Saran gizi 1 kalimat singkat"
+}`;
 
       const result = await generateWithFallback({
         contents: [
@@ -136,7 +139,6 @@ export async function POST(req: Request) {
         config: {
           responseMimeType: "application/json",
           temperature: 0.2,
-          thinkingConfig: { thinkingBudget: 0 },
         },
       });
 
@@ -171,7 +173,10 @@ export async function POST(req: Request) {
         .select()
         .single();
 
-      if (error) throw new Error(error.message);
+      if (error) {
+        console.error("[Supabase Insert nutrition_logs Error]:", error.message);
+        throw new Error(`Database error (nutrition_logs): ${error.message}`);
+      }
       return NextResponse.json({ entry: data });
     }
 
@@ -180,17 +185,18 @@ export async function POST(req: Request) {
       const goal = body.goal?.trim() || "Latihan kebugaran 30 menit di rumah tanpa alat";
 
       const prompt = `Buatkan 1 sesi rencana latihan singkat & praktis untuk target: "${goal}".
-Keluarkan JSON dengan field:
-- routine_name (string judul sesi singkat)
-- duration_minutes (number durasi menit)
-- ai_plan (string poin pemanasan, 3-4 gerakan inti set x repetisi, dan pendinginan maksimal 3 kalimat)`;
+Keluarkan HANYA JSON valid tanpa markdown dengan field:
+{
+  "routine_name": "Judul sesi singkat",
+  "duration_minutes": 30,
+  "ai_plan": "Poin pemanasan, 3-4 gerakan inti (set x repetisi), dan pendinginan ringkas"
+}`;
 
       const result = await generateWithFallback({
         contents: prompt,
         config: {
           responseMimeType: "application/json",
           temperature: 0.3,
-          thinkingConfig: { thinkingBudget: 0 },
         },
       });
 
@@ -221,12 +227,16 @@ Keluarkan JSON dengan field:
         .select()
         .single();
 
-      if (error) throw new Error(error.message);
+      if (error) {
+        console.error("[Supabase Insert workout_logs Error]:", error.message);
+        throw new Error(`Database error (workout_logs): ${error.message}`);
+      }
       return NextResponse.json({ workout: data });
     }
 
     return NextResponse.json({ error: "Aksi tidak dikenali." }, { status: 400 });
   } catch (err: any) {
+    console.error("[POST /api/wellness Error]:", err.message);
     return NextResponse.json(
       { error: err.message || "Gagal memproses data kesehatan." },
       { status: 500 }
@@ -242,10 +252,7 @@ export async function PATCH(req: Request) {
     const evalPrompt = `Pengguna baru menyelesaikan olahraga "${routine_name}" (${duration_minutes} menit). Berikan 1-2 kalimat evaluasi pelatih yang memotivasi dan saran hidrasi singkat dalam bahasa Indonesia.`;
     const evalRes = await generateWithFallback({
       contents: evalPrompt,
-      config: {
-        temperature: 0.4,
-        thinkingConfig: { thinkingBudget: 0 },
-      },
+      config: { temperature: 0.4 },
     });
     const ai_evaluation = (
       evalRes.text || "Luar biasa! Pastikan cukup minum air putih untuk pemulihan otot."
@@ -266,10 +273,11 @@ export async function PATCH(req: Request) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
+
 export async function DELETE(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
-    const type = searchParams.get("type"); // "workout" atau "nutrition"
+    const type = searchParams.get("type");
     const id = searchParams.get("id");
 
     if ((type !== "workout" && type !== "nutrition") || !id) {
