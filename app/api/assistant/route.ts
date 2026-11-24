@@ -49,39 +49,66 @@ export async function POST(req: Request) {
 
     if (textInput && textInput.trim().length > 3) {
       try {
-        const queryEmbedding = await generateEmbedding(textInput.trim());
-        const { data: matches, error: rpcError } = await supabaseAdmin.rpc(
-          "match_knowledge",
-          {
-            query_embedding: queryEmbedding,
-            match_threshold: 0.45,
-            match_count: 4,
+        if (isGuest) {
+          const qLower = textInput.trim().toLowerCase();
+          const guestMatches = GUEST_KNOWLEDGE_DOCS.filter(
+            (doc) =>
+              doc.title.toLowerCase().includes(qLower) ||
+              doc.preview.toLowerCase().includes(qLower) ||
+              qLower.split(" ").some((w: string) => w.length > 3 && doc.preview.toLowerCase().includes(w))
+          );
+
+          if (guestMatches.length > 0) {
+            ragContext =
+              "\nREFERENSI MEMORI & DOKUMEN SIMULASI DEMO:\n" +
+              guestMatches
+                .map(
+                  (m, i) =>
+                    `[Sumber ${i + 1}: "${m.title}" (${m.category})]\n${m.preview}`
+                )
+                .join("\n\n") +
+              "\n";
+
+            matchedSources = guestMatches.map((m) => ({
+              title: m.title,
+              category: m.category,
+              similarity: 88,
+            }));
           }
-        );
+        } else {
+          const queryEmbedding = await generateEmbedding(textInput.trim());
+          const { data: matches, error: rpcError } = await supabaseAdmin.rpc(
+            "match_knowledge",
+            {
+              query_embedding: queryEmbedding,
+              match_threshold: 0.45,
+              match_count: 4,
+            }
+          );
 
-        if (!rpcError && Array.isArray(matches) && matches.length > 0) {
-          ragContext =
-            "\nREFERENSI MEMORI & DOKUMEN PRIBADI AKHI (GUNAKAN JIKA RELEVAN DENGAN PERTANYAAN):\n" +
-            matches
-              .map(
-                (m: any, i: number) =>
-                  `[Sumber ${i + 1}: "${m.title}" (${m.category}) - Relevansi ${(
-                    m.similarity * 100
-                  ).toFixed(0)}%]\n${m.content}`
-              )
-              .join("\n\n") +
-            "\n";
+          if (!rpcError && Array.isArray(matches) && matches.length > 0) {
+            ragContext =
+              "\nREFERENSI MEMORI & DOKUMEN PRIBADI AKHI (GUNAKAN JIKA RELEVAN DENGAN PERTANYAAN):\n" +
+              matches
+                .map(
+                  (m: any, i: number) =>
+                    `[Sumber ${i + 1}: "${m.title}" (${m.category}) - Relevansi ${(
+                      m.similarity * 100
+                    ).toFixed(0)}%]\n${m.content}`
+                )
+                .join("\n\n") +
+              "\n";
 
-          // Simpan daftar sumber unik untuk ditampilkan sebagai badge di UI
-          const uniqueTitles = new Set<string>();
-          for (const m of matches) {
-            if (!uniqueTitles.has(m.title)) {
-              uniqueTitles.add(m.title);
-              matchedSources.push({
-                title: m.title,
-                category: m.category,
-                similarity: Math.round(m.similarity * 100),
-              });
+            const uniqueTitles = new Set<string>();
+            for (const m of matches) {
+              if (!uniqueTitles.has(m.title)) {
+                uniqueTitles.add(m.title);
+                matchedSources.push({
+                  title: m.title,
+                  category: m.category,
+                  similarity: Math.round(m.similarity * 100),
+                });
+              }
             }
           }
         }
@@ -91,29 +118,32 @@ export async function POST(req: Request) {
     }
 
     const prompt = `
-Kamu adalah asisten pribadi pintar berbahasa Indonesia untuk seorang laki-laki yang wajib kamu panggil dengan sebutan "Akhi".
+Kamu adalah asisten pribadi pintar multibahasa (Indonesia, English, العربية) untuk seorang laki-laki yang dipanggil "Akhi".
 Waktu sekarang adalah: ${currentTime} WIB (Referensi ISO UTC: ${isoNow}).
 ${historyContext}${ragContext}
 PRINSIP UTAMA & KARAKTER DISKUSI:
-1. Gaya bahasa dan pembawaanmu seperti asatidzah Ahlus Sunnah (salaf) di Indonesia: tenang, tuma'ninah, santun, rendah hati, sistematis, dan penuh hikmah.
-2. Apabila tersedia "REFERENSI MEMORI & DOKUMEN PRIBADI AKHI" di atas yang relevan dengan pertanyaan Akhi:
-   - Prioritaskan menjawab secara akurat berdasarkan isi dokumen/catatan pribadi Akhi tersebut, dan sebutkan nama sumber catatannya secara alami.
-   - Jangan mengarang informasi di luar isi dokumen apabila Akhi secara spesifik menanyakan isi catatannya.
-3. Apabila Akhi mengajak berdiskusi seputar ilmu agama, akidah, ibadah, adab, muamalah, maupun nasihat kehidupan ("general_chat"):
-   - Berlandaskan Al-Qur'an dan As-Sunnah yang shahih sesuai pemahaman para Salafush Shalih.
-   - Wajib menyertakan dalil dari Al-Qur'an (nama surat & nomor ayat) dan/atau As-Sunnah yang shahih/hasan (beserta perawinya).
-   - JANGAN PERNAH mengarang dalil atau memalsukan hadits.
-4. Klasifikasi Intent:
-   - "daily_briefing": jika Akhi meminta ringkasan hari ini, daily briefing, mengecek daftar jadwal tersimpan, atau meminta faedah pagi.
-   - "save_schedule": jika Akhi ingin MENAMBAH/MENCATAT jadwal baru.
-   - "save_idea": jika Akhi ingin MENYIMPAN ide atau catatan baru.
-   - "open_app": jika Akhi meminta membuka aplikasi tertentu.
-   - "general_chat": diskusi ilmu agama, tanya isi dokumen/catatan memori, tanya dalil, nasihat, atau obrolan umum.
+1. Gaya bahasa dan pembawaanmu seperti penuntut ilmu / asatidzah Ahlus Sunnah: tenang, tuma'ninah, santun, rendah hati, sistematis, dan penuh hikmah.
+2. ATURAN BAHASA RESPONS (WAJIB):
+  - Deteksi bahasa utama yang digunakan Akhi pada input saat ini: isi field \`detectedLang\` dengan \`"id"\` (Bahasa Indonesia), \`"en"\` (English), atau \`"ar"\` (العربية).
+  - Balas \`replyMessage\` dan \`spokenText\` menggunakan BAHASA YANG SAMA dengan bahasa input Akhi. Jika Akhi berbicara/mengetik dalam bahasa Inggris, balas sepenuhnya dalam bahasa Inggris yang natural dan sopan. Jika bahasa Arab, balas dalam bahasa Arab fusha yang jelas.
+3. Apabila tersedia "REFERENSI MEMORI & DOKUMEN PRIBADI AKHI" di atas yang relevan dengan pertanyaan Akhi:
+  - Prioritaskan menjawab secara akurat berdasarkan isi dokumen/catatan pribadi Akhi tersebut, dan sebutkan nama sumber catatannya secara alami.
+4. Apabila Akhi mengajak berdiskusi seputar ilmu agama, akidah, ibadah, adab, muamalah, maupun nasihat kehidupan ("general_chat"):
+  - Berlandaskan Al-Qur'an dan As-Sunnah yang shahih sesuai pemahaman para Salafush Shalih, disertai rujukan dalil yang valid (nama surat & nomor ayat, atau perawi hadits yang shahih/hasan). Jangan pernah mengarang dalil.
+5. Klasifikasi Intent:
+  - "daily_briefing": jika Akhi meminta ringkasan hari ini, daily briefing, mengecek daftar jadwal tersimpan, atau meminta faedah pagi.
+  - "save_schedule": jika Akhi ingin MENAMBAH/MENCATAT jadwal baru.
+  - "save_idea": jika Akhi ingin MENYIMPAN ide atau catatan baru.
+  - "generate_workout": jika Akhi meminta dibuatkan skema, rencana, atau jadwal olahraga/latihan fisik (misal: "Buatkan skema olahraga...", "Create a 20-minute workout plan"). Isi field \`workoutGoal\` dengan target latihannya.
+  - "log_meal": jika Akhi menyebutkan makanan atau minuman yang baru/akan dikonsumsi untuk dicatat kalorinya (misal: "Catat makan siang nasi ayam", "Log my lunch chicken rice"). Isi field \`mealDescription\` dengan deskripsi makanannya.
+  - "open_app": jika Akhi meminta membuka aplikasi tertentu.
+  - "general_chat": diskusi ilmu agama, latihan percakapan bahasa Inggris/Arab, tanya isi dokumen memori, atau obrolan umum.
 
 ATURAN OUTPUT JSON:
 - \`transcript\`: transkripsi persis ucapan/ketikan Akhi.
-- \`replyMessage\`: jawaban lengkap dan rapi untuk dibaca di layar.
-- \`spokenText\`: naskah khusus 100% alfabet Latin Bahasa Indonesia (TANPA huruf Arab dan TANPA markdown) agar dibacakan dengan tenang dan tuma'ninah oleh mesin suara Indonesia.
+- \`detectedLang\`: kode bahasa input (\`"id"\`, \`"en"\`, atau \`"ar"\`).
+- \`replyMessage\`: jawaban lengkap dan rapi untuk dibaca di layar (sesuai \`detectedLang\`).
+- \`spokenText\`: naskah bersih tanpa simbol markdown untuk dibacakan oleh mesin suara (jika \`detectedLang\` adalah \`"id"\`, gunakan 100% alfabet Latin tanpa huruf Arab; jika \`"en"\`, gunakan English bersih; jika \`"ar"\`, gunakan teks Arab berharakat jelas tanpa simbol markdown).
 `;
 
     const contents: any[] = [prompt];
@@ -125,14 +155,14 @@ ATURAN OUTPUT JSON:
         },
       });
     } else if (textInput) {
-      contents.push(`Perintah teks dari Akhi: "${textInput}"`);
+      contents.push(`Input dari Akhi: "${textInput}"`);
     }
 
     const candidateModels = [
       "gemini-2.5-flash-lite",
-      "gemini-3.1-flash-lite",
+      "gemini-2.0-flash-lite",
+      "gemini-2.0-flash",
       "gemini-2.5-flash",
-      "gemini-3.1-pro-preview",
     ];
 
     let lastError: any = null;
@@ -148,11 +178,17 @@ ATURAN OUTPUT JSON:
               type: Type.OBJECT,
               properties: {
                 transcript: { type: Type.STRING },
+                detectedLang: {
+                  type: Type.STRING,
+                  enum: ["id", "en", "ar"],
+                },
                 intent: {
                   type: Type.STRING,
                   enum: [
                     "save_schedule",
                     "save_idea",
+                    "generate_workout",
+                    "log_meal",
                     "open_app",
                     "daily_briefing",
                     "general_chat",
@@ -163,11 +199,19 @@ ATURAN OUTPUT JSON:
                 isoDateTime: { type: Type.STRING },
                 ideaTitle: { type: Type.STRING },
                 ideaContent: { type: Type.STRING },
+                workoutGoal: { type: Type.STRING },
+                mealDescription: { type: Type.STRING },
                 targetApp: { type: Type.STRING },
                 replyMessage: { type: Type.STRING },
                 spokenText: { type: Type.STRING },
               },
-              required: ["transcript", "intent", "replyMessage", "spokenText"],
+              required: [
+                "transcript",
+                "detectedLang",
+                "intent",
+                "replyMessage",
+                "spokenText",
+              ],
             },
           },
         });
