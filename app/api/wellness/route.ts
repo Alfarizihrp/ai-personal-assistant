@@ -8,9 +8,10 @@ import { GUEST_NUTRITION_LOGS, GUEST_WORKOUT_LOGS } from "@/lib/guest-sandbox";
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
 const FALLBACK_MODELS = [
-  "gemini-2.5-flash",
   "gemini-2.5-flash-lite",
-  "gemini-3.8-flash",
+  "gemini-2.0-flash-lite",
+  "gemini-2.0-flash",
+  "gemini-2.5-flash",
 ];
 
 async function generateWithFallback(params: {
@@ -43,7 +44,48 @@ async function generateWithFallback(params: {
     }
   }
 
-  throw lastError || new Error("Semua model AI sedang sibuk. Coba beberapa saat lagi.");
+  throw lastError || new Error("Semua model AI sedang sibuk.");
+}
+
+// Skema cadangan cerdas jika seluruh server Gemini mengalami 503 High Demand
+function buildFallbackWorkoutPlan(goal: string) {
+  const g = goal.toLowerCase();
+  const durationMatch = g.match(/(\d+)\s*(menit|mnt|min)/);
+  const duration = durationMatch ? Number(durationMatch[1]) : 30;
+
+  if (g.includes("cardio") || g.includes("kardio") || g.includes("lari") || g.includes("fat")) {
+    return {
+      routine_name: `Kardio & Pembakaran Lemak (${goal})`,
+      duration_minutes: duration,
+      ai_plan:
+        "Pemanasan 5 mnt (jalan di tempat & peregangan dinamis). Inti 3 putaran: Jumping Jacks 45 dtk, High Knees 30 dtk, Mountain Climbers 30 dtk, istirahat 45 dtk antar putaran. Pendinginan 5 mnt.",
+    };
+  }
+
+  if (g.includes("upper") || g.includes("dada") || g.includes("tangan") || g.includes("push")) {
+    return {
+      routine_name: `Upper Body Strength (${goal})`,
+      duration_minutes: duration,
+      ai_plan:
+        "Pemanasan sendi bahu & pergelangan 5 mnt. Inti 3 set: Push-up 10-15 rep, Pike Push-up 8-12 rep, Tricep Dips (kursi) 12 rep, Plank Shoulder Taps 30 dtk (istirahat 60 dtk). Pendinginan 5 mnt.",
+    };
+  }
+
+  if (g.includes("kaki") || g.includes("lower") || g.includes("squat")) {
+    return {
+      routine_name: `Lower Body & Leg Endurance (${goal})`,
+      duration_minutes: duration,
+      ai_plan:
+        "Pemanasan pinggul & lutut 5 mnt. Inti 3 set: Bodyweight Squat 15 rep, Reverse Lunges 12 rep/kaki, Glute Bridge 15 rep, Calf Raises 20 rep (istirahat 60 dtk). Pendinginan 5 mnt.",
+    };
+  }
+
+  return {
+    routine_name: `Full Body Home Workout (${goal})`,
+    duration_minutes: duration,
+    ai_plan:
+      "Pemanasan dinamis 5 mnt. Inti 3 set: Push-up 12 rep, Bodyweight Squat 15 rep, Plank 45 dtk, Jumping Jacks 40 dtk (istirahat 60 dtk antar set). Pendinginan & peregangan 5 mnt.",
+  };
 }
 
 async function isGuestSession(): Promise<boolean> {
@@ -99,7 +141,6 @@ export async function GET() {
       workouts: workoutRes.data || [],
     });
   } catch (err: any) {
-    console.error("[GET /api/wellness Error]:", err.message);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
@@ -173,18 +214,18 @@ export async function POST(req: Request) {
         .select()
         .single();
 
-      if (error) {
-        console.error("[Supabase Insert nutrition_logs Error]:", error.message);
-        throw new Error(`Database error (nutrition_logs): ${error.message}`);
-      }
+      if (error) throw new Error(`Database error (nutrition_logs): ${error.message}`);
       return NextResponse.json({ entry: data });
     }
 
-    // 2. Buat Skema Olahraga Terpantau AI
+    // 2. Buat Skema Olahraga (Dengan Graceful Degradation jika AI 503)
     if (body.action === "generate_workout") {
       const goal = body.goal?.trim() || "Latihan kebugaran 30 menit di rumah tanpa alat";
+      const fallbackPlan = buildFallbackWorkoutPlan(goal);
 
-      const prompt = `Buatkan 1 sesi rencana latihan singkat & praktis untuk target: "${goal}".
+      let parsed = fallbackPlan;
+      try {
+        const prompt = `Buatkan 1 sesi rencana latihan singkat & praktis untuk target: "${goal}".
 Keluarkan HANYA JSON valid tanpa markdown dengan field:
 {
   "routine_name": "Judul sesi singkat",
@@ -192,24 +233,24 @@ Keluarkan HANYA JSON valid tanpa markdown dengan field:
   "ai_plan": "Poin pemanasan, 3-4 gerakan inti (set x repetisi), dan pendinginan ringkas"
 }`;
 
-      const result = await generateWithFallback({
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          temperature: 0.3,
-        },
-      });
+        const result = await generateWithFallback({
+          contents: prompt,
+          config: {
+            responseMimeType: "application/json",
+            temperature: 0.3,
+          },
+        });
 
-      const parsed = parseAiJson(result.text || "{}", {
-        routine_name: goal,
-        duration_minutes: 30,
-        ai_plan: "Pemanasan 5 mnt, 3 set Push-up x 12, Squat x 15, Plank 45 dtk, Pendinginan 5 mnt.",
-      });
+        parsed = parseAiJson(result.text || "{}", fallbackPlan);
+      } catch (aiErr: any) {
+        console.warn("[Wellness AI] Menggunakan template cadangan karena server AI sibuk:", aiErr?.message);
+        parsed = fallbackPlan;
+      }
 
       const workoutPayload = {
-        routine_name: parsed.routine_name || goal,
-        duration_minutes: Number(parsed.duration_minutes) || 30,
-        ai_plan: parsed.ai_plan || "",
+        routine_name: parsed.routine_name || fallbackPlan.routine_name,
+        duration_minutes: Number(parsed.duration_minutes) || fallbackPlan.duration_minutes,
+        ai_plan: parsed.ai_plan || fallbackPlan.ai_plan,
         ai_evaluation: null,
         is_completed: false,
       };
@@ -227,16 +268,12 @@ Keluarkan HANYA JSON valid tanpa markdown dengan field:
         .select()
         .single();
 
-      if (error) {
-        console.error("[Supabase Insert workout_logs Error]:", error.message);
-        throw new Error(`Database error (workout_logs): ${error.message}`);
-      }
+      if (error) throw new Error(`Database error (workout_logs): ${error.message}`);
       return NextResponse.json({ workout: data });
     }
 
     return NextResponse.json({ error: "Aksi tidak dikenali." }, { status: 400 });
   } catch (err: any) {
-    console.error("[POST /api/wellness Error]:", err.message);
     return NextResponse.json(
       { error: err.message || "Gagal memproses data kesehatan." },
       { status: 500 }
@@ -249,14 +286,21 @@ export async function PATCH(req: Request) {
     const { id, routine_name, duration_minutes } = await req.json();
     const guest = await isGuestSession();
 
-    const evalPrompt = `Pengguna baru menyelesaikan olahraga "${routine_name}" (${duration_minutes} menit). Berikan 1-2 kalimat evaluasi pelatih yang memotivasi dan saran hidrasi singkat dalam bahasa Indonesia.`;
-    const evalRes = await generateWithFallback({
-      contents: evalPrompt,
-      config: { temperature: 0.4 },
-    });
-    const ai_evaluation = (
-      evalRes.text || "Luar biasa! Pastikan cukup minum air putih untuk pemulihan otot."
-    ).trim();
+    let ai_evaluation =
+      "Alhamdulillaah, sesi latihan selesai! Pastikan minum air putih yang cukup dan istirahat agar pemulihan otot optimal.";
+
+    try {
+      const evalPrompt = `Pengguna baru menyelesaikan olahraga "${routine_name}" (${duration_minutes} menit). Berikan 1-2 kalimat evaluasi pelatih yang memotivasi dan saran hidrasi singkat dalam bahasa Indonesia.`;
+      const evalRes = await generateWithFallback({
+        contents: evalPrompt,
+        config: { temperature: 0.4 },
+      });
+      if (evalRes.text) {
+        ai_evaluation = evalRes.text.trim();
+      }
+    } catch {
+      // Gunakan pesan evaluasi bawaan jika server AI sedang 503
+    }
 
     if (guest) {
       return NextResponse.json({ success: true, ai_evaluation, sandbox: true });
