@@ -34,7 +34,10 @@ import {
   Search,
   BarChart3,
   ArrowUpRight,
+  HeartPulse,
 } from "lucide-react";
+
+import WellnessTab from "@/components/WellnessTab";
 
 interface RagSource {
   title: string;
@@ -141,7 +144,7 @@ export default function Home() {
   const [error, setError] = useState("");
 
   const [activeTab, setActiveTab] = useState<
-    "chat" | "schedules" | "ideas" | "rag" | "analytics"
+    "chat" | "schedules" | "ideas" | "rag" | "wellness" | "analytics"
   >("chat");
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
 
@@ -345,6 +348,7 @@ export default function Home() {
         return;
       }
 
+      setSessionRole("owner");
       setIsUnlocked(true);
       setPinInput("");
     } catch {
@@ -417,6 +421,7 @@ export default function Home() {
       await fetch("/api/verify-pin", { method: "DELETE" });
     } catch {}
     setIsUnlocked(false);
+    setSessionRole(null);
     setPinInput("");
     setPinError("");
   };
@@ -1283,6 +1288,7 @@ export default function Home() {
               <Delete className="w-5 h-5" />
             </button>
           </div>
+
           <div className="w-full mt-5 pt-4 border-t border-slate-800/80">
             <button
               type="button"
@@ -1315,6 +1321,21 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center py-8 px-4">
       <div className="max-w-md w-full space-y-4">
+        {sessionRole === "guest" && (
+          <div className="bg-amber-950/60 border border-amber-800/60 text-amber-200 text-[11px] px-3.5 py-2 rounded-xl flex items-center justify-between">
+            <span>
+              <strong>Mode Demo Recruiter:</strong> Data simulasi aktif (database pemilik terlindungi).
+            </span>
+            <button
+              type="button"
+              onClick={handleLockApp}
+              className="underline font-semibold hover:text-white ml-2 cursor-pointer"
+            >
+              Keluar
+            </button>
+          </div>
+        )}
+
         {/* Bar Pencarian Lintas Data (Global Search) */}
         <div className="relative">
           <div className="flex items-center bg-slate-900 border border-slate-800 focus-within:border-blue-500 rounded-2xl px-3.5 py-2.5 shadow-lg transition">
@@ -1580,8 +1601,8 @@ export default function Home() {
           )}
         </div>
 
-        {/* Navigasi 5 Tab (Diskusi, Jadwal, Ide, Memori RAG, Analitik) */}
-        <div className="grid grid-cols-5 gap-1 bg-slate-900 p-1.5 rounded-xl border border-slate-800">
+        {/* Navigasi 6 Tab (Diskusi, Jadwal, Ide, Memori RAG, Sehat, Analitik) */}
+        <div className="grid grid-cols-6 gap-1 bg-slate-900 p-1.5 rounded-xl border border-slate-800">
           <button
             type="button"
             onClick={() => setActiveTab("chat")}
@@ -1592,7 +1613,7 @@ export default function Home() {
             }`}
           >
             <MessageSquare className="w-3.5 h-3.5" />
-            <span>Diskusi ({Math.floor(chatHistory.length / 2)})</span>
+            <span>Diskusi</span>
           </button>
 
           <button
@@ -1605,7 +1626,7 @@ export default function Home() {
             }`}
           >
             <Calendar className="w-3.5 h-3.5" />
-            <span>Jadwal ({schedules.length})</span>
+            <span>Jadwal</span>
           </button>
 
           <button
@@ -1618,7 +1639,7 @@ export default function Home() {
             }`}
           >
             <Lightbulb className="w-3.5 h-3.5" />
-            <span>Ide ({ideas.length})</span>
+            <span>Ide</span>
           </button>
 
           <button
@@ -1631,7 +1652,20 @@ export default function Home() {
             }`}
           >
             <BrainCircuit className="w-3.5 h-3.5" />
-            <span>Memori ({knowledgeDocs.length})</span>
+            <span>Memori</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab("wellness")}
+            className={`flex flex-col items-center justify-center gap-1 py-2 px-1 rounded-lg text-[10px] font-semibold transition cursor-pointer ${
+              activeTab === "wellness"
+                ? "bg-rose-600 text-white shadow"
+                : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            <HeartPulse className="w-3.5 h-3.5" />
+            <span>Sehat</span>
           </button>
 
           <button
@@ -2282,7 +2316,10 @@ export default function Home() {
           </div>
         )}
 
-        {/* Tab 5: Dashboard Analitik Produktivitas */}
+        {/* Tab 5: Kesehatan (AI Calorie Scanner & Workout Monitor) */}
+        {activeTab === "wellness" && <WellnessTab />}
+
+        {/* Tab 6: Dashboard Analitik Produktivitas */}
         {activeTab === "analytics" && (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-5">
             <div className="flex items-center justify-between">
@@ -2416,20 +2453,6 @@ export default function Home() {
                 </div>
               )}
             </div>
-          </div>
-        )}
-        {sessionRole === "guest" && (
-          <div className="bg-amber-950/60 border border-amber-800/60 text-amber-200 text-[11px] px-3.5 py-2 rounded-xl flex items-center justify-between">
-            <span>
-              <strong>Mode Demo Recruiter:</strong> Data simulasi aktif (database pemilik terlindungi).
-            </span>
-            <button
-              type="button"
-              onClick={handleLockApp}
-              className="underline font-semibold hover:text-white ml-2 cursor-pointer"
-            >
-              Keluar
-            </button>
           </div>
         )}
 
