@@ -103,10 +103,14 @@ export default function WellnessTab() {
     setGeneratingWorkout(true);
     setErrorMsg("");
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000); // Maksimal tunggu 20 detik
+
     try {
       const res = await fetch("/api/wellness", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           action: "generate_workout",
           goal: workoutGoal.trim(),
@@ -119,8 +123,13 @@ export default function WellnessTab() {
       setWorkouts((prev) => [data.workout, ...prev]);
       setWorkoutGoal("");
     } catch (err: any) {
-      setErrorMsg(err.message);
+      if (err.name === "AbortError") {
+        setErrorMsg("Waktu tunggu habis (20 detik). Silakan tekan Buat Skema lagi.");
+      } else {
+        setErrorMsg(err.message);
+      }
     } finally {
+      clearTimeout(timeoutId);
       setGeneratingWorkout(false);
     }
   };

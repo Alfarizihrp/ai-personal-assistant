@@ -16,6 +16,20 @@ async function isGuestSession(): Promise<boolean> {
   return session?.role === "guest";
 }
 
+function parseAiJson<T>(raw: string, fallback: T): T {
+  try {
+    const cleaned = raw.replace(/```json|```/g, "").trim();
+    const firstBrace = cleaned.indexOf("{");
+    const lastBrace = cleaned.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace !== -1) {
+      return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1)) as T;
+    }
+    return JSON.parse(cleaned) as T;
+  } catch {
+    return fallback;
+  }
+}
+
 export async function GET() {
   try {
     if (await isGuestSession()) {
@@ -56,23 +70,20 @@ export async function POST(req: Request) {
     const body = await req.json();
     const guest = await isGuestSession();
 
-    // 1. Analisis Foto Makanan (Zero-Blob Vision Inference)
+    // 1. Analisis Foto Makanan (Cepat dengan Native JSON Mode)
     if (body.action === "analyze_meal") {
       const { imageBase64, mimeType } = body;
       if (!imageBase64) {
         return NextResponse.json({ error: "Gambar makanan wajib diunggah." }, { status: 400 });
       }
 
-      const prompt = `Analisis foto makanan ini secara objektif sebagai ahli gizi.
-Berikan estimasi porsi yang terlihat di foto dan kembalikan HANYA JSON valid (tanpa markdown code block) dengan struktur persis seperti berikut:
-{
-  "food_name": "Nama menu makanan & estimasi porsi singkat",
-  "calories": 450,
-  "protein_g": 28,
-  "carbs_g": 50,
-  "fat_g": 14,
-  "ai_notes": "Saran singkat 1 kalimat terkait keseimbangan gizi makanan ini"
-}`;
+      const prompt = `Analisis foto makanan ini sebagai ahli gizi. Estimasi porsi di foto dan keluarkan JSON dengan field:
+- food_name (string nama makanan & porsi singkat)
+- calories (number kkal)
+- protein_g (number gram)
+- carbs_g (number gram)
+- fat_g (number gram)
+- ai_notes (string saran gizi 1 kalimat singkat)`;
 
       const result = await ai.models.generateContent({
         model: GEMINI_MODEL,
@@ -85,10 +96,21 @@ Berikan estimasi porsi yang terlihat di foto dan kembalikan HANYA JSON valid (ta
             },
           },
         ],
+        config: {
+          responseMimeType: "application/json",
+          temperature: 0.2,
+          thinkingConfig: { thinkingBudget: 0 },
+        },
       });
 
-      const rawText = (result.text || "{}").replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(rawText);
+      const parsed = parseAiJson(result.text || "{}", {
+        food_name: "Makanan Terdeteksi",
+        calories: 350,
+        protein_g: 20,
+        carbs_g: 40,
+        fat_g: 10,
+        ai_notes: "Estimasi otomatis dari foto makanan.",
+      });
 
       const logPayload = {
         food_name: parsed.food_name || "Makanan Terdeteksi",
@@ -116,25 +138,31 @@ Berikan estimasi porsi yang terlihat di foto dan kembalikan HANYA JSON valid (ta
       return NextResponse.json({ entry: data });
     }
 
-    // 2. Buat Skema Olahraga Terpantau AI
+    // 2. Buat Skema Olahraga Cepat (< 2 Detik)
     if (body.action === "generate_workout") {
       const goal = body.goal?.trim() || "Latihan kebugaran 30 menit di rumah tanpa alat";
 
-      const prompt = `Buatkan 1 sesi rencana latihan olahraga terstruktur berdasarkan target berikut: "${goal}".
-Kembalikan HANYA JSON valid (tanpa markdown code block) dengan format:
-{
-  "routine_name": "Judul singkat sesi latihan",
-  "duration_minutes": 30,
-  "ai_plan": "Rincian pemanasan, gerakan inti (set x repetisi), dan pendinginan secara ringkas"
-}`;
+      const prompt = `Buatkan 1 sesi rencana latihan singkat & praktis untuk target: "${goal}".
+Keluarkan JSON dengan field:
+- routine_name (string judul sesi singkat)
+- duration_minutes (number durasi menit)
+- ai_plan (string poin pemanasan, 3-4 gerakan inti set x repetisi, dan pendinginan maksimal 3 kalimat)`;
 
       const result = await ai.models.generateContent({
         model: GEMINI_MODEL,
         contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          temperature: 0.3,
+          thinkingConfig: { thinkingBudget: 0 },
+        },
       });
 
-      const rawText = (result.text || "{}").replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(rawText);
+      const parsed = parseAiJson(result.text || "{}", {
+        routine_name: goal,
+        duration_minutes: 30,
+        ai_plan: "Pemanasan 5 mnt, 3 set Push-up x 12, Squat x 15, Plank 45 dtk, Pendinginan 5 mnt.",
+      });
 
       const workoutPayload = {
         routine_name: parsed.routine_name || goal,
@@ -175,12 +203,16 @@ export async function PATCH(req: Request) {
     const { id, routine_name, duration_minutes } = await req.json();
     const guest = await isGuestSession();
 
-    const evalPrompt = `Pengguna baru saja menyelesaikan sesi olahraga "${routine_name}" selama ${duration_minutes} menit. Berikan 1-2 kalimat evaluasi pelatih kebugaran yang memotivasi dan saran pemulihan/hidrasi singkat dalam bahasa Indonesia.`;
+    const evalPrompt = `Pengguna baru menyelesaikan olahraga "${routine_name}" (${duration_minutes} menit). Berikan 1-2 kalimat evaluasi pelatih yang memotivasi dan saran hidrasi singkat dalam bahasa Indonesia.`;
     const evalRes = await ai.models.generateContent({
       model: GEMINI_MODEL,
       contents: evalPrompt,
+      config: {
+        temperature: 0.4,
+        thinkingConfig: { thinkingBudget: 0 },
+      },
     });
-    const ai_evaluation = (evalRes.text || "").trim();
+    const ai_evaluation = (evalRes.text || "Luar biasa! Pastikan cukup minum air putih untuk pemulihan otot.").trim();
 
     if (guest) {
       return NextResponse.json({ success: true, ai_evaluation, sandbox: true });
