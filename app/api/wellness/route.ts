@@ -6,6 +6,7 @@ import { supabaseAdmin } from "@/lib/supabase-server";
 import { GUEST_NUTRITION_LOGS, GUEST_WORKOUT_LOGS } from "@/lib/guest-sandbox";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+const GEMINI_MODEL = "gemini-3.8-flash";
 
 async function isGuestSession(): Promise<boolean> {
   const cookieStore = await cookies();
@@ -74,7 +75,7 @@ Berikan estimasi porsi yang terlihat di foto dan kembalikan HANYA JSON valid (ta
 }`;
 
       const result = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
+        model: GEMINI_MODEL,
         contents: [
           prompt,
           {
@@ -128,7 +129,7 @@ Kembalikan HANYA JSON valid (tanpa markdown code block) dengan format:
 }`;
 
       const result = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
+        model: GEMINI_MODEL,
         contents: prompt,
       });
 
@@ -176,7 +177,7 @@ export async function PATCH(req: Request) {
 
     const evalPrompt = `Pengguna baru saja menyelesaikan sesi olahraga "${routine_name}" selama ${duration_minutes} menit. Berikan 1-2 kalimat evaluasi pelatih kebugaran yang memotivasi dan saran pemulihan/hidrasi singkat dalam bahasa Indonesia.`;
     const evalRes = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: GEMINI_MODEL,
       contents: evalPrompt,
     });
     const ai_evaluation = (evalRes.text || "").trim();
