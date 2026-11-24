@@ -6,7 +6,10 @@ import { cookies } from "next/headers";
 import { verifySessionToken } from "@/lib/auth";
 import { GUEST_KNOWLEDGE_DOCS } from "@/lib/guest-sandbox";
 
-const ai = new GoogleGenAI({});
+const ai = new GoogleGenAI({
+  apiKey: process.env.GEMINI_API_KEY || "",
+  httpOptions: { apiVersion: "v1beta" },
+});
 
 export async function POST(req: Request) {
   try {
@@ -158,83 +161,83 @@ ATURAN OUTPUT JSON:
       contents.push(`Input dari Akhi: "${textInput}"`);
     }
 
-    const candidateModels = [
-      "gemini-3.8-flash",
-      "gemini-3.8-flash-lite",
-      "gemini-3.8-pro",
-    ];
-    let lastError: any = null;
+    const MODEL_NAME = "gemini-3.8-flash";
+ const MAX_RETRIES = 3;
+ let lastError: any = null;
 
-    for (const modelName of candidateModels) {
-      try {
-        const response = await ai.models.generateContent({
-          model: modelName,
-          contents,
-          config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                transcript: { type: Type.STRING },
-                detectedLang: {
-                  type: Type.STRING,
-                  enum: ["id", "en", "ar"],
-                },
-                intent: {
-                  type: Type.STRING,
-                  enum: [
-                    "save_schedule",
-                    "save_idea",
-                    "generate_workout",
-                    "log_meal",
-                    "open_app",
-                    "daily_briefing",
-                    "general_chat",
-                  ],
-                },
-                taskTitle: { type: Type.STRING },
-                scheduleTime: { type: Type.STRING },
-                isoDateTime: { type: Type.STRING },
-                ideaTitle: { type: Type.STRING },
-                ideaContent: { type: Type.STRING },
-                workoutGoal: { type: Type.STRING },
-                mealDescription: { type: Type.STRING },
-                targetApp: { type: Type.STRING },
-                replyMessage: { type: Type.STRING },
-                spokenText: { type: Type.STRING },
-              },
-              required: [
-                "transcript",
-                "detectedLang",
-                "intent",
-                "replyMessage",
-                "spokenText",
-              ],
-            },
-          },
-        });
+ for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+   try {
+     const response = await ai.models.generateContent({
+       model: MODEL_NAME,
+       contents,
+       config: {
+         responseMimeType: "application/json",
+         responseSchema: {
+           type: Type.OBJECT,
+           properties: {
+             transcript: { type: Type.STRING },
+             detectedLang: {
+               type: Type.STRING,
+               enum: ["id", "en", "ar"],
+             },
+             intent: {
+               type: Type.STRING,
+               enum: [
+                 "save_schedule",
+                 "save_idea",
+                 "generate_workout",
+                 "log_meal",
+                 "open_app",
+                 "daily_briefing",
+                 "general_chat",
+               ],
+             },
+             taskTitle: { type: Type.STRING },
+             scheduleTime: { type: Type.STRING },
+             isoDateTime: { type: Type.STRING },
+             ideaTitle: { type: Type.STRING },
+             ideaContent: { type: Type.STRING },
+             workoutGoal: { type: Type.STRING },
+             mealDescription: { type: Type.STRING },
+             targetApp: { type: Type.STRING },
+             replyMessage: { type: Type.STRING },
+             spokenText: { type: Type.STRING },
+           },
+           required: [
+             "transcript",
+             "detectedLang",
+             "intent",
+             "replyMessage",
+             "spokenText",
+           ],
+         },
+       },
+     });
 
-        const parsed = JSON.parse(response.text || "{}");
-        return NextResponse.json({
-          ...parsed,
-          sources: matchedSources,
-        });
-      } catch (err: any) {
-        lastError = err;
-        if (
-          err.status === 404 ||
-          err.status === 503 ||
-          err.message?.includes("503") ||
-          err.message?.includes("UNAVAILABLE")
-        ) {
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-          continue;
-        }
-        throw err;
-      }
-    }
+     const parsed = JSON.parse(response.text || "{}");
+     return NextResponse.json({
+       ...parsed,
+       sources: matchedSources,
+     });
+   } catch (err: any) {
+     lastError = err;
+     const msg = String(err?.message || err);
+     const isTransient =
+       err.status === 503 ||
+       err.status === 429 ||
+       msg.includes("503") ||
+       msg.includes("429") ||
+       msg.includes("UNAVAILABLE");
 
-    throw lastError || new Error("Semua model AI sedang sibuk.");
+     if (isTransient && attempt < MAX_RETRIES) {
+       await new Promise((resolve) => setTimeout(resolve, attempt * 1200));
+       continue;
+     }
+     throw err;
+   }
+ }
+
+ throw lastError || new Error("Server Gemini sedang sibuk. Silakan coba lagi.");
   } catch (error: any) {
     return NextResponse.json(
       { error: error.message || "Gagal memproses permintaan." },

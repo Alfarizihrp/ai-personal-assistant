@@ -5,13 +5,10 @@ import { SESSION_COOKIE_NAME, verifySessionToken } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase-server";
 import { GUEST_NUTRITION_LOGS, GUEST_WORKOUT_LOGS } from "@/lib/guest-sandbox";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
-
-const FALLBACK_MODELS = [
-  "gemini-3.8-flash",
-  "gemini-3.8-flash-lite",
-  "gemini-3.8-pro",
-];
+const ai = new GoogleGenAI({
+  apiKey: process.env.GEMINI_API_KEY || "",
+  httpOptions: { apiVersion: "v1beta" },
+});
 
 async function generateWithFallback(params: {
   contents: any;
@@ -19,31 +16,25 @@ async function generateWithFallback(params: {
 }) {
   let lastError: any = null;
 
-  for (const model of FALLBACK_MODELS) {
+  for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       return await ai.models.generateContent({
-        model,
+        model: "gemini-3.8-flash",
         contents: params.contents,
         config: params.config,
       });
     } catch (err: any) {
       lastError = err;
       const msg = String(err?.message || err);
-      console.warn(`[Wellness AI] Model ${model} gagal:`, msg);
-      if (
-        msg.includes("503") ||
-        msg.includes("UNAVAILABLE") ||
-        msg.includes("429") ||
-        msg.includes("404") ||
-        msg.includes("400")
-      ) {
+      if ((msg.includes("503") || msg.includes("429") || msg.includes("UNAVAILABLE")) && attempt < 2) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
         continue;
       }
       throw err;
     }
   }
 
-  throw lastError || new Error("Semua model AI sedang sibuk.");
+  throw lastError || new Error("Server AI sedang sibuk.");
 }
 
 // Skema cadangan cerdas jika seluruh server Gemini mengalami 503 High Demand
