@@ -15,6 +15,14 @@ import {
   X,
 } from "lucide-react";
 import { compressImageToBase64 } from "@/lib/image-compress";
+import {
+  calculateDailyNutritionSummary,
+  getJakartaDateKey,
+} from "@/lib/nutrition";
+import {
+  jakartaDateTimeLocalToIso,
+  toJakartaDateTimeLocalValue,
+} from "@/lib/reminders";
 
 interface NutritionEntry {
   id: number;
@@ -37,7 +45,7 @@ interface WorkoutEntry {
   created_at: string;
 }
 
-export default function WellnessTab() {
+export default function WellnessTab({ refreshSignal = 0 }: { refreshSignal?: number }) {
   const [nutrition, setNutrition] = useState<NutritionEntry[]>([]);
   const [workouts, setWorkouts] = useState<WorkoutEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -51,6 +59,7 @@ export default function WellnessTab() {
   // State Masukkan ke Jadwal
   const [schedulingId, setSchedulingId] = useState<number | null>(null);
   const [scheduleTimeInput, setScheduleTimeInput] = useState("Hari ini, 17:00 WIB");
+  const [scheduleDateTimeInput, setScheduleDateTimeInput] = useState("");
   const [savingScheduleId, setSavingScheduleId] = useState<number | null>(null);
   const [scheduledIds, setScheduledIds] = useState<Record<number, boolean>>({});
 
@@ -74,7 +83,7 @@ export default function WellnessTab() {
 
   useEffect(() => {
     fetchWellnessData();
-  }, []);
+  }, [refreshSignal]);
 
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -137,6 +146,7 @@ export default function WellnessTab() {
     setErrorMsg("");
 
     try {
+      const targetIso = jakartaDateTimeLocalToIso(scheduleDateTimeInput);
       const res = await fetch("/api/workspace", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -145,7 +155,7 @@ export default function WellnessTab() {
           payload: {
             title: `Olahraga: ${item.routine_name} (${item.duration_minutes} mnt)`,
             schedule_time: scheduleTimeInput.trim() || "Hari ini, 17:00 WIB",
-            target_datetime: null,
+            target_datetime: targetIso,
             reminded: false,
           },
         }),
@@ -233,8 +243,12 @@ export default function WellnessTab() {
     }
   };
 
-  const totalCalories = nutrition.reduce((acc, item) => acc + Number(item.calories || 0), 0);
-  const totalProtein = nutrition.reduce((acc, item) => acc + Number(item.protein_g || 0), 0);
+  const {
+    todayKey,
+    todayEntries,
+    totalCalories,
+    totalProtein,
+  } = calculateDailyNutritionSummary(nutrition);
   const calorieTarget = 2000;
   const caloriePct = Math.min(100, Math.round((totalCalories / calorieTarget) * 100));
 
@@ -265,7 +279,7 @@ export default function WellnessTab() {
             </h2>
           </div>
           <span className="text-[11px] text-slate-400">
-            {totalCalories} / {calorieTarget} kkal
+            Hari Ini: {totalCalories} / {calorieTarget} kkal
           </span>
         </div>
 
@@ -278,7 +292,7 @@ export default function WellnessTab() {
 
         <div className="flex items-center justify-between text-[11px] text-slate-400">
           <span>
-            Total Protein Tercatat:{" "}
+            Protein Hari Ini ({todayEntries.length} log):{" "}
             <strong className="text-emerald-400">{totalProtein.toFixed(1)}g</strong>
           </span>
           <span>Kompresi Otomatis &lt;70KB</span>
@@ -339,10 +353,25 @@ export default function WellnessTab() {
                     </button>
                   </div>
                 </div>
-                <div className="flex gap-3 text-[10px] text-slate-400">
+                <div className="flex flex-wrap items-center gap-3 text-[10px] text-slate-400">
                   <span>Protein: {item.protein_g}g</span>
                   <span>Karbo: {item.carbs_g}g</span>
                   <span>Lemak: {item.fat_g}g</span>
+                  <span
+                    className={`ml-auto px-1.5 py-0.5 rounded ${
+                      getJakartaDateKey(item.created_at) === todayKey
+                        ? "bg-emerald-950/70 text-emerald-400 border border-emerald-800/50"
+                        : "text-slate-500"
+                    }`}
+                  >
+                    {getJakartaDateKey(item.created_at) === todayKey
+                      ? "Hari ini"
+                      : new Date(item.created_at).toLocaleDateString("id-ID", {
+                          timeZone: "Asia/Jakarta",
+                          day: "numeric",
+                          month: "short",
+                        })}
+                  </span>
                 </div>
                 {item.ai_notes && (
                   <p className="text-[11px] text-slate-400 italic pt-0.5">
@@ -429,34 +458,47 @@ export default function WellnessTab() {
 
                 {/* Form Singkat Pilih Waktu untuk Dimasukkan ke Tab Jadwal */}
                 {isSchedulingThis && (
-                  <div className="flex items-center gap-1.5 bg-slate-900 border border-blue-800/60 rounded-lg p-2">
-                    <input
-                      type="text"
-                      value={scheduleTimeInput}
-                      onChange={(e) => setScheduleTimeInput(e.target.value)}
-                      placeholder="Waktu (mis: Besok, 16:30 WIB)..."
-                      className="flex-1 bg-slate-950 border border-slate-800 rounded px-2 py-1 text-[11px] text-slate-100 focus:outline-none focus:border-blue-500"
-                    />
-                    <button
-                      type="button"
-                      disabled={savingScheduleId === w.id}
-                      onClick={() => handleAddWorkoutToSchedule(w)}
-                      className="px-2.5 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-medium flex items-center gap-1 cursor-pointer shrink-0"
-                    >
-                      {savingScheduleId === w.id ? (
-                        <Loader2 className="w-3 h-3 animate-spin" />
-                      ) : (
-                        <Check className="w-3 h-3" />
-                      )}
-                      <span>Simpan</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setSchedulingId(null)}
-                      className="p-1 text-slate-400 hover:text-slate-200 cursor-pointer"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
+                  <div className="space-y-1.5 bg-slate-900 border border-blue-800/60 rounded-lg p-2">
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        value={scheduleTimeInput}
+                        onChange={(e) => setScheduleTimeInput(e.target.value)}
+                        placeholder="Label waktu (mis: Besok, 16:30 WIB)..."
+                        className="flex-1 bg-slate-950 border border-slate-800 rounded px-2 py-1 text-[11px] text-slate-100 focus:outline-none focus:border-blue-500"
+                      />
+                      <button
+                        type="button"
+                        disabled={savingScheduleId === w.id}
+                        onClick={() => handleAddWorkoutToSchedule(w)}
+                        className="px-2.5 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-medium flex items-center gap-1 cursor-pointer shrink-0"
+                      >
+                        {savingScheduleId === w.id ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <Check className="w-3 h-3" />
+                        )}
+                        <span>Simpan</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSchedulingId(null)}
+                        className="p-1 text-slate-400 hover:text-slate-200 cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="text-[10px] text-slate-400 shrink-0">
+                        Pengingat H-15m:
+                      </label>
+                      <input
+                        type="datetime-local"
+                        value={scheduleDateTimeInput}
+                        onChange={(e) => setScheduleDateTimeInput(e.target.value)}
+                        className="flex-1 bg-slate-950 border border-slate-800 rounded px-2 py-1 text-[10px] text-slate-200 focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
                   </div>
                 )}
 
@@ -473,6 +515,10 @@ export default function WellnessTab() {
                       onClick={() => {
                         setSchedulingId(isSchedulingThis ? null : w.id);
                         setScheduleTimeInput("Hari ini, 17:00 WIB");
+                        const defaultTarget = new Date(Date.now() + 60 * 60 * 1000);
+                        setScheduleDateTimeInput(
+                          toJakartaDateTimeLocalValue(defaultTarget.toISOString())
+                        );
                       }}
                       className="inline-flex items-center gap-1 text-[10px] font-medium px-2.5 py-1 rounded-lg bg-blue-950/60 hover:bg-blue-900/70 text-blue-300 border border-blue-800/50 transition cursor-pointer"
                     >

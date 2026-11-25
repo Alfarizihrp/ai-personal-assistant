@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import * as webpush from "web-push";
 import { supabaseAdmin } from "@/lib/supabase-server";
+import { isGuestSession } from "@/lib/session-server";
 
 function initWebPush() {
   const publicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
@@ -17,6 +18,13 @@ function initWebPush() {
 // POST: Simpan atau perbarui PushSubscription perangkat ke Supabase
 export async function POST(req: Request) {
   try {
+    if (await isGuestSession()) {
+      return NextResponse.json(
+        { error: "Mode Demo Tamu tidak dapat mendaftarkan perangkat ke notifikasi pemilik." },
+        { status: 403 }
+      );
+    }
+
     const subscription = await req.json();
 
     if (!subscription?.endpoint || !subscription?.keys?.p256dh || !subscription?.keys?.auth) {
@@ -46,6 +54,13 @@ export async function POST(req: Request) {
 // PUT: Kirim notifikasi uji coba langsung ke perangkat terdaftar
 export async function PUT() {
   try {
+    if (await isGuestSession()) {
+      return NextResponse.json(
+        { error: "Mode Demo Tamu tidak dapat mengirim Push Notification ke perangkat pemilik." },
+        { status: 403 }
+      );
+    }
+
     initWebPush();
 
     const { data: subs, error } = await supabaseAdmin

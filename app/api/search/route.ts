@@ -1,20 +1,11 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { verifySessionToken } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase-server";
+import { isGuestSession } from "@/lib/session-server";
 import {
   GUEST_SCHEDULES,
   GUEST_IDEAS,
   GUEST_KNOWLEDGE_DOCS,
 } from "@/lib/guest-sandbox";
-
-async function isGuestSession(): Promise<boolean> {
-  const cookieStore = await cookies();
-  const token = cookieStore.get("akhi_session")?.value;
-  if (!token) return false;
-  const session = await verifySessionToken(token);
-  return session?.role === "guest";
-}
 
 export async function GET(req: Request) {
   try {

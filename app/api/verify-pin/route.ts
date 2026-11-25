@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
 import { createSessionToken } from "@/lib/auth";
+import {
+  getClientIdentifier,
+  pinRateLimiter,
+  verifyPinTimingSafe,
+} from "@/lib/rate-limit";
 
 export async function POST(req: Request) {
   try {
@@ -25,7 +30,23 @@ export async function POST(req: Request) {
       return response;
     }
 
-    // Mode Pemilik (Owner) dengan PIN 6 digit
+    // Mode Pemilik (Owner) dengan PIN 6 digit + rate limiting & timing-safe check
+    const clientKey = getClientIdentifier(req);
+    const limitStatus = pinRateLimiter.check(clientKey);
+    if (!limitStatus.allowed) {
+      return NextResponse.json(
+        {
+          error: `Terlalu banyak percobaan PIN gagal. Coba lagi dalam ${Math.ceil(
+            limitStatus.retryAfterSeconds / 60
+          )} menit.`,
+        },
+        {
+          status: 429,
+          headers: { "Retry-After": String(limitStatus.retryAfterSeconds) },
+        }
+      );
+    }
+
     const { pin } = body;
     const validPin = process.env.APP_ACCESS_PIN;
 
@@ -36,12 +57,29 @@ export async function POST(req: Request) {
       );
     }
 
-    if (!pin || String(pin).trim() !== String(validPin).trim()) {
+    if (!pin || !verifyPinTimingSafe(String(pin), String(validPin))) {
+      const failure = pinRateLimiter.recordFailure(clientKey);
+      if (failure.blocked) {
+        return NextResponse.json(
+          {
+            error: `Terlalu banyak percobaan PIN gagal. Akses dikunci selama ${Math.ceil(
+              failure.retryAfterSeconds / 60
+            )} menit.`,
+          },
+          {
+            status: 429,
+            headers: { "Retry-After": String(failure.retryAfterSeconds) },
+          }
+        );
+      }
+
       return NextResponse.json(
-        { error: "Kode PIN tidak valid." },
+        { error: `Kode PIN tidak valid. Sisa percobaan: ${failure.remaining}.` },
         { status: 401 }
       );
     }
+
+    pinRateLimiter.reset(clientKey);
 
     const token = await createSessionToken("owner");
     const response = NextResponse.json({

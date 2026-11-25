@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { GoogleGenAI, Type } from "@google/genai";
-
-const ai = new GoogleGenAI({});
+import { Type } from "@google/genai";
+import { generateContentWithFallback } from "@/lib/gemini";
+import { isGuestSession } from "@/lib/session-server";
 
 export async function POST(req: Request) {
   try {
@@ -28,6 +28,28 @@ export async function POST(req: Request) {
             .join("\n")
         : "Tidak ada agenda tertunda di daftar jadwal saat ini.";
 
+    if (await isGuestSession()) {
+      const spokenItems =
+        activeSchedules.length > 0
+          ? activeSchedules
+              .map((s: any, idx: number) => `Agenda ${idx + 1}: ${s.title}, waktu ${s.schedule_time}`)
+              .join(". ")
+          : "Saat ini tidak ada agenda tertunda";
+
+      return NextResponse.json({
+        sandbox: true,
+        replyMessage:
+          `Assalaamu 'alaikum wa rahmatullaahi wa barakaatuh, Akhi (Mode Demo).\n\n` +
+          `Berikut ringkasan agenda aktif di sandbox:\n${scheduleListText}\n\n` +
+          `Faedah Ilmu Hari Ini:\n` +
+          `Dari Ibnu 'Abbas radhiyallaahu 'anhuma, Nabi shallallaahu 'alaihi wa sallam bersabda: ` +
+          `"Dua kenikmatan yang banyak manusia tertipu di dalamnya: kesehatan dan waktu luang." (HR. Bukhari no. 6412).`,
+        spokenText:
+          `Assalaamu alaikum Akhi. Berikut ringkasan agenda di mode demo. ${spokenItems}. ` +
+          `Faedah hari ini dari hadits riwayat Bukhari: dua kenikmatan yang banyak manusia tertipu di dalamnya adalah kesehatan dan waktu luang.`,
+      });
+    }
+
     const prompt = `
 Kamu adalah asisten pribadi pintar berbahasa Indonesia untuk seorang laki-laki yang wajib kamu panggil dengan sebutan "Akhi".
 Waktu sekarang adalah: ${currentTime} WIB.
@@ -45,51 +67,25 @@ ATURAN OUTPUT JSON:
 - \`spokenText\`: Naskah khusus berbahasa Indonesia 100% alfabet Latin (TANPA huruf Arab dan TANPA simbol markdown) dengan tanda koma dan titik yang pas agar dibacakan dengan suara tenang, tuma'ninah, dan berwibawa oleh mesin suara Indonesia.
 `;
 
-    const candidateModels = [
-      "gemini-2.5-flash-lite",
-      "gemini-3.1-flash-lite",
-      "gemini-2.5-flash",
-      "gemini-3.1-pro-preview",
-    ];
-
-    let lastError: any = null;
-
-    for (const modelName of candidateModels) {
-      try {
-        const response = await ai.models.generateContent({
-          model: modelName,
-          contents: [prompt],
-          config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                replyMessage: { type: Type.STRING },
-                spokenText: { type: Type.STRING },
-              },
-              required: ["replyMessage", "spokenText"],
-            },
+    const response = await generateContentWithFallback({
+      contents: [prompt],
+      retryDelayMs: 800,
+      label: "Daily Briefing AI",
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            replyMessage: { type: Type.STRING },
+            spokenText: { type: Type.STRING },
           },
-        });
+          required: ["replyMessage", "spokenText"],
+        },
+      },
+    });
 
-        const parsed = JSON.parse(response.text || "{}");
-        return NextResponse.json(parsed);
-      } catch (err: any) {
-        lastError = err;
-        if (
-          err.status === 404 ||
-          err.status === 503 ||
-          err.message?.includes("503") ||
-          err.message?.includes("UNAVAILABLE")
-        ) {
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-          continue;
-        }
-        throw err;
-      }
-    }
-
-    throw lastError || new Error("Server AI sedang sibuk. Coba beberapa saat lagi.");
+    const parsed = JSON.parse(response.text || "{}");
+    return NextResponse.json(parsed);
   } catch (error: any) {
     return NextResponse.json(
       { error: error.message || "Gagal membuat Daily Briefing." },

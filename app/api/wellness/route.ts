@@ -1,40 +1,19 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { GoogleGenAI } from "@google/genai";
-import { SESSION_COOKIE_NAME, verifySessionToken } from "@/lib/auth";
+import { generateContentWithFallback } from "@/lib/gemini";
 import { supabaseAdmin } from "@/lib/supabase-server";
+import { isGuestSession } from "@/lib/session-server";
 import { GUEST_NUTRITION_LOGS, GUEST_WORKOUT_LOGS } from "@/lib/guest-sandbox";
-
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY || "",
-  httpOptions: { apiVersion: "v1beta" },
-});
 
 async function generateWithFallback(params: {
   contents: any;
   config?: Record<string, any>;
 }) {
-  let lastError: any = null;
-
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      return await ai.models.generateContent({
-        model: "gemini-3.8-flash",
-        contents: params.contents,
-        config: params.config,
-      });
-    } catch (err: any) {
-      lastError = err;
-      const msg = String(err?.message || err);
-      if ((msg.includes("503") || msg.includes("429") || msg.includes("UNAVAILABLE")) && attempt < 2) {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        continue;
-      }
-      throw err;
-    }
-  }
-
-  throw lastError || new Error("Server AI sedang sibuk.");
+  return generateContentWithFallback({
+    contents: params.contents,
+    config: params.config,
+    retryDelayMs: 600,
+    label: "Wellness AI",
+  });
 }
 
 // Skema cadangan cerdas jika seluruh server Gemini mengalami 503 High Demand
@@ -76,14 +55,6 @@ function buildFallbackWorkoutPlan(goal: string) {
     ai_plan:
       "Pemanasan dinamis 5 mnt. Inti 3 set: Push-up 12 rep, Bodyweight Squat 15 rep, Plank 45 dtk, Jumping Jacks 40 dtk (istirahat 60 dtk antar set). Pendinginan & peregangan 5 mnt.",
   };
-}
-
-async function isGuestSession(): Promise<boolean> {
-  const cookieStore = await cookies();
-  const token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
-  if (!token) return false;
-  const session = await verifySessionToken(token);
-  return session?.role === "guest";
 }
 
 function parseAiJson<T>(raw: string, fallback: T): T {

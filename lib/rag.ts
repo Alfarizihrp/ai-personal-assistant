@@ -1,9 +1,4 @@
-import { GoogleGenAI } from "@google/genai";
-
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY || "",
-  httpOptions: { apiVersion: "v1beta" },
-});
+import { ai, GEMINI_EMBEDDING_MODEL } from "@/lib/gemini";
 
 /**
  * Memecah teks dokumen panjang menjadi potongan-potongan (chunks)
@@ -51,7 +46,7 @@ export function chunkText(
  */
 export async function generateEmbedding(text: string): Promise<number[]> {
   const response = await ai.models.embedContent({
-    model: "gemini-embedding-001",
+    model: GEMINI_EMBEDDING_MODEL,
     contents: text,
     config: {
       outputDimensionality: 768,

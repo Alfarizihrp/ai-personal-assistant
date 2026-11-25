@@ -1,13 +1,24 @@
 import { NextResponse } from "next/server";
 import * as webpush from "web-push";
 import { supabaseAdmin } from "@/lib/supabase-server";
+import {
+  formatReminderBody,
+  isScheduleDueForReminder,
+} from "@/lib/reminders";
 
 export async function GET(req: Request) {
   try {
     const authHeader = req.headers.get("authorization");
     const cronSecret = process.env.CRON_SECRET;
 
-    if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+    if (!cronSecret) {
+      return NextResponse.json(
+        { error: "CRON_SECRET belum dikonfigurasi di server." },
+        { status: 500 }
+      );
+    }
+
+    if (authHeader !== `Bearer ${cronSecret}`) {
       return NextResponse.json({ error: "Unauthorized Cron Trigger" }, { status: 401 });
     }
 
@@ -21,37 +32,44 @@ export async function GET(req: Request) {
 
     webpush.setVapidDetails(subject, publicKey, privateKey);
 
-    // Ambil semua jadwal yang belum selesai dan belum diingatkan
-    const { data: schedules, error: schedErr } = await supabaseAdmin
+    const { searchParams } = new URL(req.url);
+    const scheduleIdParam = searchParams.get("scheduleId");
+
+    // Ambil jadwal yang belum selesai dan belum diingatkan (opsional spesifik per scheduleId)
+    let query = supabaseAdmin
       .from("schedules")
       .select("*")
       .eq("is_done", false)
       .eq("reminded", false)
       .not("target_datetime", "is", null);
 
+    if (scheduleIdParam && Number.isFinite(Number(scheduleIdParam))) {
+      query = query.eq("id", Number(scheduleIdParam));
+    }
+
+    const { data: schedules, error: schedErr } = await query;
+
     if (schedErr) throw new Error(schedErr.message);
 
     const now = Date.now();
-    const dueSchedules = (schedules || []).filter((item) => {
-      const target = new Date(item.target_datetime).getTime();
-      const diffMinutes = (target - now) / (1000 * 60);
-      return diffMinutes <= 15 && diffMinutes >= -30;
-    });
+    const dueSchedules = (schedules || []).filter((item) =>
+      isScheduleDueForReminder(item.target_datetime, now)
+    );
 
     if (dueSchedules.length === 0) {
-      return NextResponse.json({ processed: 0, message: "Tidak ada jadwal jatuh tempo." });
+      return NextResponse.json({ processed: 0, sentCount: 0, message: "Tidak ada jadwal jatuh tempo." });
     }
 
     const { data: subs } = await supabaseAdmin.from("push_subscriptions").select("*");
+    let sentCount = 0;
 
     for (const item of dueSchedules) {
-      const target = new Date(item.target_datetime).getTime();
-      const diffMinutes = Math.ceil((target - now) / (1000 * 60));
-
-      const bodyText =
-        diffMinutes > 1
-          ? `${diffMinutes} menit lagi: ${item.title} (${item.schedule_time})`
-          : `Waktunya sekarang: ${item.title} (${item.schedule_time})`;
+      const bodyText = formatReminderBody(
+        item.title,
+        item.schedule_time,
+        item.target_datetime,
+        now
+      );
 
       const payload = JSON.stringify({
         title: "Pengingat Jadwal — Akhi AI",
@@ -60,20 +78,28 @@ export async function GET(req: Request) {
         url: "/",
       });
 
-      for (const sub of subs || []) {
-        try {
-          await webpush.sendNotification(
-            {
-              endpoint: sub.endpoint,
-              keys: { p256dh: sub.p256dh, auth: sub.auth },
-            },
-            payload
-          );
-        } catch (pushErr: any) {
-          if (pushErr.statusCode === 410 || pushErr.statusCode === 404) {
-            await supabaseAdmin.from("push_subscriptions").delete().eq("id", sub.id);
+      const results = await Promise.allSettled(
+        (subs || []).map(async (sub) => {
+          try {
+            await webpush.sendNotification(
+              {
+                endpoint: sub.endpoint,
+                keys: { p256dh: sub.p256dh, auth: sub.auth },
+              },
+              payload
+            );
+            return true;
+          } catch (pushErr: any) {
+            if (pushErr.statusCode === 410 || pushErr.statusCode === 404) {
+              await supabaseAdmin.from("push_subscriptions").delete().eq("id", sub.id);
+            }
+            return false;
           }
-        }
+        })
+      );
+
+      for (const r of results) {
+        if (r.status === "fulfilled" && r.value) sentCount++;
       }
 
       // Tandai jadwal sudah diingatkan agar tidak terkirim ganda
@@ -86,6 +112,7 @@ export async function GET(req: Request) {
     return NextResponse.json({
       success: true,
       processed: dueSchedules.length,
+      sentCount,
     });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });

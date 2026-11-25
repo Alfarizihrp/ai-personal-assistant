@@ -1,22 +1,19 @@
 import { NextResponse } from "next/server";
-import { GoogleGenAI, Type } from "@google/genai";
-import { supabaseAdmin } from "@/lib/supabase-server";
-import { generateEmbedding } from "@/lib/rag";
-import { cookies } from "next/headers";
-import { verifySessionToken } from "@/lib/auth";
-import { GUEST_KNOWLEDGE_DOCS } from "@/lib/guest-sandbox";
-
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY || "",
-  httpOptions: { apiVersion: "v1beta" },
-});
-
-const CANDIDATE_MODELS = [
-  "gemini-3.8-flash",
-  "gemini-3.8-flash-lite",
-  "gemini-3.1-flash-lite",
-  "gemini-3.1-pro-preview",
-];
+import { Type, type Content, type Part } from "@google/genai";
+import {
+  GEMINI_FAST_MODELS,
+  generateContentWithFallback,
+} from "@/lib/gemini";
+import { isGuestSession } from "@/lib/session-server";
+import {
+  retrieveRagContext,
+  type RagSourceMatch,
+} from "@/lib/rag-retrieval";
+import {
+  ASSISTANT_TOOL_DECLARATIONS,
+  executeAssistantToolCall,
+  type RefreshTarget,
+} from "@/lib/assistant-tools";
 
 // Deteksi bahasa sederhana jika server AI sedang 503 High Demand
 function detectLocalLang(text: string): "id" | "en" | "ar" {
@@ -119,14 +116,95 @@ function buildOfflineFallbackResponse(textInput?: string) {
   };
 }
 
+async function transcribeAudioForRag(
+  audioBase64: string,
+  mimeType: string
+): Promise<string> {
+  try {
+    const res = await generateContentWithFallback({
+      models: GEMINI_FAST_MODELS,
+      retryDelayMs: 300,
+      label: "Voice RAG Pre-Transcript",
+      contents: [
+        "Transkripsikan ucapan pada audio ini secara akurat dalam bahasa aslinya (Indonesia, English, atau العربية) sebagai teks polos tanpa komentar tambahan. Jika tidak terdengar ucapan, kembalikan string kosong.",
+        {
+          inlineData: {
+            mimeType,
+            data: audioBase64,
+          },
+        },
+      ],
+      config: { temperature: 0 },
+    });
+    return (res.text || "").trim();
+  } catch (err) {
+    console.warn("Pra-transkripsi suara untuk RAG dilewati:", err);
+    return "";
+  }
+}
+
+const ASSISTANT_RESPONSE_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    transcript: { type: Type.STRING },
+    detectedLang: {
+      type: Type.STRING,
+      enum: ["id", "en", "ar"],
+    },
+    intent: {
+      type: Type.STRING,
+      enum: [
+        "save_schedule",
+        "save_idea",
+        "generate_workout",
+        "log_meal",
+        "open_app",
+        "daily_briefing",
+        "general_chat",
+      ],
+    },
+    taskTitle: { type: Type.STRING },
+    scheduleTime: { type: Type.STRING },
+    isoDateTime: { type: Type.STRING },
+    ideaTitle: { type: Type.STRING },
+    ideaContent: { type: Type.STRING },
+    workoutGoal: { type: Type.STRING },
+    mealDescription: { type: Type.STRING },
+    targetApp: { type: Type.STRING },
+    replyMessage: { type: Type.STRING },
+    spokenText: { type: Type.STRING },
+  },
+  required: [
+    "transcript",
+    "detectedLang",
+    "intent",
+    "replyMessage",
+    "spokenText",
+  ],
+};
+
+function parseJsonObjectSafe(raw?: string | null): Record<string, any> | null {
+  if (!raw) return null;
+  try {
+    const cleaned = raw.replace(/```json|```/g, "").trim();
+    const firstBrace = cleaned.indexOf("{");
+    const lastBrace = cleaned.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace !== -1) {
+      return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
+    }
+    return JSON.parse(cleaned);
+  } catch {
+    return null;
+  }
+}
+
 export async function POST(req: Request) {
   let bodyData: any = {};
+  let effectiveQuery = "";
+  let matchedSources: RagSourceMatch[] = [];
 
   try {
-    const cookieStore = await cookies();
-    const sessionToken = cookieStore.get("akhi_session")?.value;
-    const sessionInfo = sessionToken ? await verifySessionToken(sessionToken) : null;
-    const isGuest = sessionInfo?.role === "guest";
+    const isGuest = await isGuestSession();
     bodyData = await req.json();
     const { audioBase64, mimeType, textInput, chatHistory } = bodyData;
 
@@ -147,7 +225,7 @@ export async function POST(req: Request) {
 
     let historyContext = "";
     if (Array.isArray(chatHistory) && chatHistory.length > 0) {
-      const recent = chatHistory.slice(-6);
+      const recent = chatHistory.slice(-8);
       historyContext =
         "\nRIWAYAT PERCAKAPAN SEBELUMNYA:\n" +
         recent
@@ -156,77 +234,21 @@ export async function POST(req: Request) {
         "\n";
     }
 
-    // --- TAHAP RAG RETRIEVAL (Jika input berupa teks) ---
+    // --- TAHAP RAG RETRIEVAL (Mendukung Teks maupun Suara via Pra-Transkripsi) ---
+    effectiveQuery = typeof textInput === "string" ? textInput.trim() : "";
+    if (!effectiveQuery && audioBase64) {
+      effectiveQuery = await transcribeAudioForRag(
+        audioBase64,
+        mimeType || "audio/webm"
+      );
+    }
+
     let ragContext = "";
-    let matchedSources: { title: string; category: string; similarity: number }[] = [];
-
-    if (textInput && textInput.trim().length > 3) {
+    if (effectiveQuery.length > 3) {
       try {
-        if (isGuest) {
-          const qLower = textInput.trim().toLowerCase();
-          const guestMatches = GUEST_KNOWLEDGE_DOCS.filter(
-            (doc) =>
-              doc.title.toLowerCase().includes(qLower) ||
-              doc.preview.toLowerCase().includes(qLower) ||
-              qLower
-                .split(" ")
-                .some((w: string) => w.length > 3 && doc.preview.toLowerCase().includes(w))
-          );
-
-          if (guestMatches.length > 0) {
-            ragContext =
-              "\nREFERENSI MEMORI & DOKUMEN SIMULASI DEMO:\n" +
-              guestMatches
-                .map(
-                  (m, i) =>
-                    `[Sumber ${i + 1}: "${m.title}" (${m.category})]\n${m.preview}`
-                )
-                .join("\n\n") +
-              "\n";
-
-            matchedSources = guestMatches.map((m) => ({
-              title: m.title,
-              category: m.category,
-              similarity: 88,
-            }));
-          }
-        } else {
-          const queryEmbedding = await generateEmbedding(textInput.trim());
-          const { data: matches, error: rpcError } = await supabaseAdmin.rpc(
-            "match_knowledge",
-            {
-              query_embedding: queryEmbedding,
-              match_threshold: 0.45,
-              match_count: 4,
-            }
-          );
-
-          if (!rpcError && Array.isArray(matches) && matches.length > 0) {
-            ragContext =
-              "\nREFERENSI MEMORI & DOKUMEN PRIBADI AKHI (GUNAKAN JIKA RELEVAN DENGAN PERTANYAAN):\n" +
-              matches
-                .map(
-                  (m: any, i: number) =>
-                    `[Sumber ${i + 1}: "${m.title}" (${m.category}) - Relevansi ${(
-                      m.similarity * 100
-                    ).toFixed(0)}%]\n${m.content}`
-                )
-                .join("\n\n") +
-              "\n";
-
-            const uniqueTitles = new Set<string>();
-            for (const m of matches) {
-              if (!uniqueTitles.has(m.title)) {
-                uniqueTitles.add(m.title);
-                matchedSources.push({
-                  title: m.title,
-                  category: m.category,
-                  similarity: Math.round(m.similarity * 100),
-                });
-              }
-            }
-          }
-        }
+        const ragResult = await retrieveRagContext(effectiveQuery, isGuest);
+        ragContext = ragResult.ragContext;
+        matchedSources = ragResult.matchedSources;
       } catch (ragErr) {
         console.warn("Pencarian RAG dilewati:", ragErr);
       }
@@ -240,146 +262,169 @@ PRINSIP UTAMA & KARAKTER DISKUSI:
 1. Gaya bahasa dan pembawaanmu seperti penuntut ilmu / asatidzah Ahlus Sunnah: tenang, tuma'ninah, santun, rendah hati, sistematis, dan penuh hikmah.
 2. ATURAN BAHASA RESPONS (WAJIB):
   - Deteksi bahasa utama yang digunakan Akhi pada input saat ini: isi field \`detectedLang\` dengan \`"id"\` (Bahasa Indonesia), \`"en"\` (English), atau \`"ar"\` (العربية).
-  - Balas \`replyMessage\` dan \`spokenText\` menggunakan BAHASA YANG SAMA dengan bahasa input Akhi. Jika Akhi berbicara/mengetik dalam bahasa Inggris, balas sepenuhnya dalam bahasa Inggris yang natural dan sopan. Jika bahasa Arab, balas dalam bahasa Arab fusha yang jelas.
-3. Apabila tersedia "REFERENSI MEMORI & DOKUMEN PRIBADI AKHI" di atas yang relevan dengan pertanyaan Akhi:
-  - Prioritaskan menjawab secara akurat berdasarkan isi dokumen/catatan pribadi Akhi tersebut, dan sebutkan nama sumber catatannya secara alami.
+  - Balas \`replyMessage\` dan \`spokenText\` menggunakan BAHASA YANG SAMA dengan bahasa input Akhi.
+3. Apabila tersedia "REFERENSI MEMORI & DOKUMEN PRIBADI AKHI" yang relevan:
+  - Prioritaskan menjawab secara akurat berdasarkan isi dokumen tersebut dan sebutkan nama sumber catatannya.
 4. Apabila Akhi mengajak berdiskusi seputar ilmu agama, akidah, ibadah, adab, muamalah, maupun nasihat kehidupan ("general_chat"):
-  - Berlandaskan Al-Qur'an dan As-Sunnah yang shahih sesuai pemahaman para Salafush Shalih, disertai rujukan dalil yang valid (nama surat & nomor ayat, atau perawi hadits yang shahih/hasan). Jangan pernah mengarang dalil.
-5. Klasifikasi Intent:
-  - "daily_briefing": jika Akhi meminta ringkasan hari ini, daily briefing, mengecek daftar jadwal tersimpan, atau meminta faedah pagi.
-  - "save_schedule": jika Akhi ingin MENAMBAH/MENCATAT jadwal baru.
-  - "save_idea": jika Akhi ingin MENYIMPAN ide atau catatan baru.
-  - "generate_workout": jika Akhi meminta dibuatkan skema, rencana, atau jadwal olahraga/latihan fisik (misal: "Buatkan skema olahraga...", "Create a 20-minute workout plan"). Isi field \`workoutGoal\` dengan target latihannya.
-  - "log_meal": jika Akhi menyebutkan makanan atau minuman yang baru/akan dikonsumsi untuk dicatat kalorinya (misal: "Catat makan siang nasi ayam", "Log my lunch chicken rice"). Isi field \`mealDescription\` dengan deskripsi makanannya.
-  - "open_app": jika Akhi meminta membuka aplikasi tertentu.
-  - "general_chat": diskusi ilmu agama, latihan percakapan bahasa Inggris/Arab, tanya isi dokumen memori, atau obrolan umum.
+  - Berlandaskan Al-Qur'an dan As-Sunnah yang shahih sesuai pemahaman para Salafush Shalih, disertai rujukan dalil yang valid (jangan pernah mengarang dalil).
+5. PENGGUNAAN FUNCTION CALLING (MULTI-AKSI):
+  - Kamu memiliki tools untuk membaca/menambah/menyelesaikan/menghapus jadwal, mencatat ide/faedah, membaca nutrisi hari ini, mencatat makanan, membuat skema olahraga, dan mencari memori RAG.
+  - Jika permintaan Akhi melibatkan satu atau beberapa aksi/data nyata (misal: menandai jadwal selesai lalu mencatat makan siang, atau mengecek sisa kalori hari ini, atau membaca daftar jadwal), PANGGIL tool yang sesuai terlebih dahulu (boleh memanggil lebih dari 1 tool sekaligus).
+  - Khusus jika Akhi meminta "daily_briefing" (ringkasan hari ini/faedah pagi) atau "open_app" (buka WhatsApp/YouTube/Instagram/Maps/Gmail/GitHub), tidak perlu memanggil tool mutasi; langsung keluarkan JSON dengan intent tersebut.
+6. Klasifikasi Intent:
+  - "daily_briefing", "save_schedule", "save_idea", "generate_workout", "log_meal", "open_app", "general_chat".
 
-ATURAN OUTPUT JSON:
-- \`transcript\`: transkripsi persis ucapan/ketikan Akhi.
-- \`detectedLang\`: kode bahasa input (\`"id"\`, \`"en"\`, atau \`"ar"\`).
-- \`replyMessage\`: jawaban lengkap dan rapi untuk dibaca di layar (sesuai \`detectedLang\`).
-- \`spokenText\`: naskah bersih tanpa simbol markdown untuk dibacakan oleh mesin suara (jika \`detectedLang\` adalah \`"id"\`, gunakan 100% alfabet Latin tanpa huruf Arab; jika \`"en"\`, gunakan English bersih; jika \`"ar"\`, gunakan teks Arab berharakat jelas tanpa simbol markdown).
+ATURAN OUTPUT AKHIR (WAJIB JSON VALID TANPA MARKDOWN):
+Setelah seluruh tool selesai dipanggil (atau jika tidak butuh tool), keluarkan HANYA JSON valid dengan struktur:
+{
+  "transcript": "transkripsi persis ucapan/ketikan Akhi",
+  "detectedLang": "id" | "en" | "ar",
+  "intent": "save_schedule" | "save_idea" | "generate_workout" | "log_meal" | "open_app" | "daily_briefing" | "general_chat",
+  "targetApp": "(opsional jika open_app)",
+  "replyMessage": "jawaban lengkap dan rapi untuk dibaca di layar",
+  "spokenText": "naskah bersih tanpa simbol markdown untuk TTS (jika detectedLang 'id' gunakan 100% alfabet Latin tanpa huruf Arab)"
+}
 `;
 
-    const contents: any[] = [prompt];
+    const userParts: Part[] = [{ text: prompt }];
     if (audioBase64) {
-      contents.push({
+      if (effectiveQuery) {
+        userParts.push({ text: `Transkrip awal ucapan Akhi: "${effectiveQuery}"` });
+      }
+      userParts.push({
         inlineData: {
           mimeType: mimeType || "audio/webm",
           data: audioBase64,
         },
       });
     } else if (textInput) {
-      contents.push(`Input dari Akhi: "${textInput}"`);
+      userParts.push({ text: `Input dari Akhi: "${textInput}"` });
     }
 
-    let lastError: any = null;
+    const conversationContents: Content[] = [{ role: "user", parts: userParts }];
+    const toolCtx = {
+      isGuest,
+      actions: [] as string[],
+      refreshTargets: new Set<RefreshTarget>(),
+      sources: [...matchedSources],
+    };
 
-    for (const modelName of CANDIDATE_MODELS) {
-      try {
-        const response = await ai.models.generateContent({
-          model: modelName,
-          contents,
+    try {
+      let finalRawText = "";
+      let executedToolCalls = 0;
+
+      for (let round = 0; round < 4; round++) {
+        const response = await generateContentWithFallback({
+          contents: conversationContents,
+          label: "Assistant AI",
           config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                transcript: { type: Type.STRING },
-                detectedLang: {
-                  type: Type.STRING,
-                  enum: ["id", "en", "ar"],
-                },
-                intent: {
-                  type: Type.STRING,
-                  enum: [
-                    "save_schedule",
-                    "save_idea",
-                    "generate_workout",
-                    "log_meal",
-                    "open_app",
-                    "daily_briefing",
-                    "general_chat",
-                  ],
-                },
-                taskTitle: { type: Type.STRING },
-                scheduleTime: { type: Type.STRING },
-                isoDateTime: { type: Type.STRING },
-                ideaTitle: { type: Type.STRING },
-                ideaContent: { type: Type.STRING },
-                workoutGoal: { type: Type.STRING },
-                mealDescription: { type: Type.STRING },
-                targetApp: { type: Type.STRING },
-                replyMessage: { type: Type.STRING },
-                spokenText: { type: Type.STRING },
-              },
-              required: [
-                "transcript",
-                "detectedLang",
-                "intent",
-                "replyMessage",
-                "spokenText",
-              ],
-            },
+            tools: [{ functionDeclarations: ASSISTANT_TOOL_DECLARATIONS }],
           },
         });
 
-        const rawText = (response.text || "{}").replace(/```json|```/g, "").trim();
-        const parsed = JSON.parse(rawText);
+        const calls = response.functionCalls;
+        if (calls && calls.length > 0) {
+          const modelContent = response.candidates?.[0]?.content || {
+            role: "model",
+            parts: calls.map((fc) => ({ functionCall: fc })),
+          };
+          conversationContents.push(modelContent);
 
-        return NextResponse.json({
-          transcript: parsed.transcript || textInput || "(Audio)",
-          detectedLang: parsed.detectedLang || "id",
-          intent: parsed.intent || "general_chat",
-          taskTitle: parsed.taskTitle || "",
-          scheduleTime: parsed.scheduleTime || "",
-          isoDateTime: parsed.isoDateTime || "",
-          ideaTitle: parsed.ideaTitle || "",
-          ideaContent: parsed.ideaContent || "",
-          workoutGoal: parsed.workoutGoal || "",
-          mealDescription: parsed.mealDescription || "",
-          targetApp: parsed.targetApp || "",
-          replyMessage:
-            parsed.replyMessage ||
-            "Afwan Akhi, permintaan telah diproses namun balasan teks kosong.",
-          spokenText:
-            parsed.spokenText ||
-            parsed.replyMessage ||
-            "Permintaan telah diproses.",
-          sources: matchedSources,
-        });
-      } catch (err: any) {
-        lastError = err;
-        const msg = String(err?.message || err);
-        console.warn(`[Assistant AI] Model ${modelName} gagal:`, msg);
-        const shouldContinue =
-          err.status === 404 ||
-          err.status === 503 ||
-          err.status === 429 ||
-          msg.includes("404") ||
-          msg.includes("503") ||
-          msg.includes("429") ||
-          msg.includes("UNAVAILABLE");
+          const responseParts: Part[] = [];
+          for (const fc of calls) {
+            const toolName = fc.name || "";
+            const toolResult = await executeAssistantToolCall(
+              toolName,
+              (fc.args as Record<string, any>) || {},
+              toolCtx
+            );
+            executedToolCalls++;
+            responseParts.push({
+              functionResponse: {
+                name: toolName,
+                response: toolResult,
+              },
+            });
+          }
 
-        if (shouldContinue) {
-          await new Promise((resolve) => setTimeout(resolve, 600));
+          conversationContents.push({ role: "user", parts: responseParts });
           continue;
         }
-        throw err;
-      }
-    }
 
-    // Jika semua model AI sedang mengalami 503 High Demand, gunakan fallback lokal agar UI tidak error
-    console.warn("[Assistant AI] Semua model sibuk, menggunakan graceful fallback:", lastError?.message);
-    return NextResponse.json({
-      ...buildOfflineFallbackResponse(bodyData?.textInput),
-      sources: matchedSources,
-    });
+        finalRawText = response.text || "";
+        break;
+      }
+
+      let parsed = parseJsonObjectSafe(finalRawText);
+      if (!parsed || !parsed.replyMessage) {
+        const formatRes = await generateContentWithFallback({
+          models: GEMINI_FAST_MODELS,
+          label: "Assistant JSON Formatter",
+          contents: [
+            ...conversationContents,
+            ...(finalRawText
+              ? [{ role: "model", parts: [{ text: finalRawText }] }]
+              : []),
+            {
+              role: "user",
+              parts: [
+                {
+                  text: "Formatkan hasil percakapan dan eksekusi tool di atas menjadi JSON valid sesuai schema respons.",
+                },
+              ],
+            },
+          ],
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: ASSISTANT_RESPONSE_SCHEMA,
+          },
+        });
+        parsed = parseJsonObjectSafe(formatRes.text) || {};
+      }
+
+      return NextResponse.json({
+        transcript: parsed.transcript || effectiveQuery || textInput || "(Audio)",
+        detectedLang: parsed.detectedLang || "id",
+        intent: parsed.intent || "general_chat",
+        taskTitle: parsed.taskTitle || "",
+        scheduleTime: parsed.scheduleTime || "",
+        isoDateTime: parsed.isoDateTime || "",
+        ideaTitle: parsed.ideaTitle || "",
+        ideaContent: parsed.ideaContent || "",
+        workoutGoal: parsed.workoutGoal || "",
+        mealDescription: parsed.mealDescription || "",
+        targetApp: parsed.targetApp || "",
+        replyMessage:
+          parsed.replyMessage ||
+          "Afwan Akhi, permintaan telah diproses namun balasan teks kosong.",
+        spokenText:
+          parsed.spokenText ||
+          parsed.replyMessage ||
+          "Permintaan telah diproses.",
+        sources: toolCtx.sources,
+        handledByServerTools: executedToolCalls > 0,
+        actions: toolCtx.actions,
+        refreshTargets: Array.from(toolCtx.refreshTargets),
+      });
+    } catch (aiErr: any) {
+      // Jika semua model AI sedang sibuk, gunakan fallback lokal agar UI tidak error
+      console.warn("[Assistant AI] Semua model sibuk, menggunakan graceful fallback:", aiErr?.message);
+      return NextResponse.json({
+        ...buildOfflineFallbackResponse(effectiveQuery || bodyData?.textInput),
+        sources: toolCtx.sources,
+        handledByServerTools: false,
+        actions: [],
+        refreshTargets: [],
+      });
+    }
   } catch (error: any) {
     console.error("[POST /api/assistant Error]:", error);
     return NextResponse.json({
-      ...buildOfflineFallbackResponse(bodyData?.textInput),
-      sources: [],
+      ...buildOfflineFallbackResponse(effectiveQuery || bodyData?.textInput),
+      sources: matchedSources,
+      handledByServerTools: false,
+      actions: [],
+      refreshTargets: [],
     });
   }
 }

@@ -1,16 +1,8 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
-import { verifySessionToken } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase-server";
+import { isGuestSession } from "@/lib/session-server";
+import { scheduleExactPushReminder } from "@/lib/reminders";
 import { GUEST_SCHEDULES, GUEST_IDEAS } from "@/lib/guest-sandbox";
-
-async function isGuestSession(): Promise<boolean> {
-  const cookieStore = await cookies();
-  const token = cookieStore.get("akhi_session")?.value;
-  if (!token) return false;
-  const session = await verifySessionToken(token);
-  return session?.role === "guest";
-}
 
 export async function GET() {
   try {
@@ -61,7 +53,17 @@ export async function POST(req: Request) {
       .single();
 
     if (error) throw new Error(error.message);
-    return NextResponse.json({ data });
+
+    let reminderScheduled = false;
+    if (resource === "schedules" && data?.id && data?.target_datetime) {
+      const qstashResult = await scheduleExactPushReminder(
+        data.id,
+        data.target_datetime
+      );
+      reminderScheduled = qstashResult.scheduled;
+    }
+
+    return NextResponse.json({ data, reminderScheduled });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
@@ -84,6 +86,11 @@ export async function PATCH(req: Request) {
       .eq("id", id);
 
     if (error) throw new Error(error.message);
+
+    if (resource === "schedules" && id && updates?.target_datetime) {
+      await scheduleExactPushReminder(Number(id), updates.target_datetime);
+    }
+
     return NextResponse.json({ success: true });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
