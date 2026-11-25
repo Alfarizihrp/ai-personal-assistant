@@ -12,6 +12,7 @@ import {
   X,
 } from "lucide-react";
 import type { ScheduleItem } from "@/types/assistant";
+import SheetsExportControl from "@/components/SheetsExportControl";
 
 interface SchedulesTabProps {
   schedules: ScheduleItem[];
@@ -60,37 +61,41 @@ export default function SchedulesTab({
 }: SchedulesTabProps) {
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-semibold flex items-center gap-2">
           <Bell className="w-4 h-4 text-blue-400" />
           <span>Agenda & Pengingat</span>
         </h2>
 
-        {pushSubscribed ? (
-          <button
-            type="button"
-            disabled={testingPush}
-            onClick={onTestPush}
-            className="text-[11px] bg-emerald-950/70 hover:bg-emerald-900/70 border border-emerald-800/60 text-emerald-300 px-2.5 py-1 rounded-lg flex items-center gap-1 cursor-pointer"
-          >
-            {testingPush ? (
-              <Loader2 className="w-3 h-3 animate-spin" />
-            ) : (
-              <BellRing className="w-3 h-3" />
-            )}
-            <span>{testingPush ? "Mengirim..." : "Test Push HP"}</span>
-          </button>
-        ) : (
-          <button
-            type="button"
-            disabled={subscribingPush}
-            onClick={onEnablePush}
-            className="text-[11px] bg-amber-950/70 hover:bg-amber-900/70 border border-amber-800/60 text-amber-300 px-2.5 py-1 rounded-lg flex items-center gap-1 cursor-pointer"
-          >
-            <Bell className="w-3 h-3" />
-            <span>Aktifkan Push Latar Belakang</span>
-          </button>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <SheetsExportControl exportType="schedules" />
+
+          {pushSubscribed ? (
+            <button
+              type="button"
+              disabled={testingPush}
+              onClick={onTestPush}
+              className="text-[11px] bg-emerald-950/70 hover:bg-emerald-900/70 border border-emerald-800/60 text-emerald-300 px-2.5 py-1 rounded-lg flex items-center gap-1 cursor-pointer"
+            >
+              {testingPush ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : (
+                <BellRing className="w-3 h-3" />
+              )}
+              <span>{testingPush ? "Mengirim..." : "Test Push HP"}</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={subscribingPush}
+              onClick={onEnablePush}
+              className="text-[11px] bg-amber-950/70 hover:bg-amber-900/70 border border-amber-800/60 text-amber-300 px-2.5 py-1 rounded-lg flex items-center gap-1 cursor-pointer"
+            >
+              <Bell className="w-3 h-3" />
+              <span>Aktifkan Push</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {loadingData ? (

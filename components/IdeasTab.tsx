@@ -5,6 +5,7 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  FileDown,
   Lightbulb,
   Loader2,
   Pencil,
@@ -14,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import type { IdeaItem } from "@/types/assistant";
+import { exportIdeaToPdf } from "@/lib/pdf-export";
 
 interface IdeasTabProps {
   ideas: IdeaItem[];
@@ -198,6 +200,15 @@ export default function IdeasTab({
                         {idea.title}
                       </h3>
                       <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => exportIdeaToPdf(idea)}
+                          className="text-slate-400 hover:text-emerald-300 px-1.5 py-1 rounded text-[10px] flex items-center gap-1 transition cursor-pointer"
+                          title="Unduh catatan ini sebagai PDF"
+                        >
+                          <FileDown className="w-3.5 h-3.5" />
+                          <span>PDF</span>
+                        </button>
                         <button
                           type="button"
                           onClick={() => onStartEdit(idea)}

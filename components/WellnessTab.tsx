@@ -23,6 +23,7 @@ import {
   jakartaDateTimeLocalToIso,
   toJakartaDateTimeLocalValue,
 } from "@/lib/reminders";
+import SheetsExportControl from "@/components/SheetsExportControl";
 
 interface NutritionEntry {
   id: number;
@@ -263,6 +264,13 @@ export default function WellnessTab({ refreshSignal = 0 }: { refreshSignal?: num
 
   return (
     <div className="space-y-4">
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl px-4 py-3 flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs font-medium text-slate-300">
+          Sinkronkan log nutrisi & olahraga
+        </span>
+        <SheetsExportControl exportType="wellness" label="Kirim Sehat ke Sheets" />
+      </div>
+
       {errorMsg && (
         <div className="bg-rose-950/70 border border-rose-800 text-rose-200 text-xs px-3 py-2 rounded-xl">
           {errorMsg}

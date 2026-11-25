@@ -1,8 +1,9 @@
 "use client";
 
-import React from "react";
-import { BrainCircuit, FileText, Loader2, Plus, Trash2 } from "lucide-react";
+import React, { useState } from "react";
+import { BrainCircuit, FileDown, FileText, Loader2, Plus, Trash2 } from "lucide-react";
 import type { KnowledgeDocItem } from "@/types/assistant";
+import { exportKnowledgeDocToPdf } from "@/lib/pdf-export";
 
 interface MemoryRagTabProps {
   knowledgeDocs: KnowledgeDocItem[];
@@ -37,8 +38,37 @@ export default function MemoryRagTab({
   onSubmitRag,
   onDeleteDoc,
 }: MemoryRagTabProps) {
+  const [exportingTitle, setExportingTitle] = useState<string | null>(null);
+  const [pdfError, setPdfError] = useState("");
+
+  const handleExportPdf = async (doc: KnowledgeDocItem) => {
+    if (exportingTitle) return;
+    setExportingTitle(doc.title);
+    setPdfError("");
+
+    try {
+      const res = await fetch(
+        `/api/knowledge?title=${encodeURIComponent(doc.title)}`
+      );
+      const data = await res.json();
+      if (!res.ok || !data.document) {
+        throw new Error(data.error || "Gagal memuat isi lengkap dokumen.");
+      }
+      exportKnowledgeDocToPdf(data.document);
+    } catch (err: any) {
+      setPdfError(err.message || "Gagal mengekspor PDF.");
+    } finally {
+      setExportingTitle(null);
+    }
+  };
+
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+      {pdfError && (
+        <p className="text-[11px] text-rose-300 bg-rose-950/50 border border-rose-800/60 px-2.5 py-1.5 rounded-lg">
+          {pdfError}
+        </p>
+      )}
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-sm font-semibold flex items-center gap-2">
@@ -148,14 +178,30 @@ export default function MemoryRagTab({
                   </div>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => onDeleteDoc(doc.title)}
-                  className="text-slate-600 hover:text-red-400 p-1 transition cursor-pointer"
-                  title="Hapus dokumen dari memori vektor"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    disabled={exportingTitle === doc.title}
+                    onClick={() => handleExportPdf(doc)}
+                    className="text-slate-400 hover:text-purple-300 px-1.5 py-1 rounded text-[10px] flex items-center gap-1 transition cursor-pointer disabled:opacity-50"
+                    title="Unduh dokumen lengkap ini sebagai PDF"
+                  >
+                    {exportingTitle === doc.title ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <FileDown className="w-3.5 h-3.5" />
+                    )}
+                    <span>PDF</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onDeleteDoc(doc.title)}
+                    className="text-slate-600 hover:text-red-400 p-1 transition cursor-pointer"
+                    title="Hapus dokumen dari memori vektor"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
 
               <p className="text-xs text-slate-400 leading-relaxed">{doc.preview}</p>

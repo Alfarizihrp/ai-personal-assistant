@@ -1,12 +1,66 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-server";
-import { chunkText, generateEmbedding } from "@/lib/rag";
+import {
+  chunkText,
+  generateEmbedding,
+  mergeKnowledgeChunks,
+} from "@/lib/rag";
 import { GUEST_KNOWLEDGE_DOCS } from "@/lib/guest-sandbox";
 import { isGuestSession } from "@/lib/session-server";
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
-    if (await isGuestSession()) {
+    const { searchParams } = new URL(req.url);
+    const requestedTitle = searchParams.get("title")?.trim();
+    const guest = await isGuestSession();
+
+    if (requestedTitle) {
+      if (guest) {
+        const found = GUEST_KNOWLEDGE_DOCS.find((d) => d.title === requestedTitle);
+        if (!found) {
+          return NextResponse.json(
+            { error: "Dokumen tidak ditemukan di sandbox." },
+            { status: 404 }
+          );
+        }
+        return NextResponse.json({
+          document: {
+            title: found.title,
+            category: found.category,
+            chunkCount: found.chunkCount,
+            created_at: found.created_at,
+            fullContent: found.preview,
+          },
+          sandbox: true,
+        });
+      }
+
+      const { data: chunksData, error: docError } = await supabaseAdmin
+        .from("knowledge_base")
+        .select("id, title, category, content, created_at")
+        .eq("title", requestedTitle)
+        .order("id", { ascending: true });
+
+      if (docError) throw new Error(docError.message);
+      if (!chunksData || chunksData.length === 0) {
+        return NextResponse.json(
+          { error: "Dokumen tidak ditemukan." },
+          { status: 404 }
+        );
+      }
+
+      return NextResponse.json({
+        document: {
+          title: chunksData[0].title,
+          category: chunksData[0].category || "Catatan Umum",
+          chunkCount: chunksData.length,
+          created_at: chunksData[0].created_at,
+          fullContent: mergeKnowledgeChunks(chunksData.map((r) => r.content)),
+        },
+      });
+    }
+
+    if (guest) {
       return NextResponse.json({
         documents: GUEST_KNOWLEDGE_DOCS,
         sandbox: true,
